@@ -1,7 +1,7 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 
-const router = Router()
+const router: ExpressRouter = Router()
 
 // ─── GET /api/admin/stats — Public stats (also used on home page) ───
 router.get('/stats', async (_req: Request, res: Response) => {

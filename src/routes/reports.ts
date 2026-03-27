@@ -1,10 +1,10 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken, requireAdmin } from '../middleware/auth.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
 
-const router = Router()
+const router: ExpressRouter = Router()
 
 // ─── GET /api/reports — Public list of all reports with pagination ───
 router.get('/', async (req: Request, res: Response) => {

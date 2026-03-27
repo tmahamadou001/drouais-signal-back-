@@ -1,9 +1,9 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { anthropic } from '../lib/anthropic.js'
 import { analyzePhotoWithGemini } from '../lib/gemini.js'
 import { uploadMemory } from '../middleware/uploadMemory.js'
 
-const router = Router()
+const router: ExpressRouter = Router()
 
 // ─── POST /api/analyze-photo — Analyze photo with AI (Claude or Gemini) ───
 router.post('/', uploadMemory.single('photo'), async (req: Request, res: Response) => {
