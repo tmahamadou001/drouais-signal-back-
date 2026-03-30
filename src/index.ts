@@ -8,6 +8,8 @@ import votesRouter from './routes/votes.js'
 import analyzeRouter from './routes/analyze.js'
 import mapRouter from './routes/map.js'
 import heatmapRouter from './routes/heatmap.js'
+import weeklyReportRouter from './routes/weeklyReport.js'
+import './cron/weeklyReport.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
@@ -61,6 +63,7 @@ app.use('/api/reports', voteLimiter, votesRouter)
 app.use('/api/analyze-photo', analyzeLimiter, analyzeRouter)
 app.use('/api/map', mapRouter)
 app.use('/api/admin', heatmapLimiter, heatmapRouter)
+app.use('/api/admin', weeklyReportRouter)
 
 // ─── Health check ───
 app.get('/api/health', (_req, res) => {
