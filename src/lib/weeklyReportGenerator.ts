@@ -280,7 +280,7 @@ function buildEmailHtml(stats: WeeklyStats, aiText: string): string {
 <div class="container">
 
   <div class="header">
-    <h1>📊 DrouaisSignal</h1>
+    <h1>📊 OnSignale</h1>
     <p>Résumé hebdomadaire — Semaine du ${stats.period.from} au ${stats.period.to}</p>
   </div>
 
@@ -339,7 +339,7 @@ function buildEmailHtml(stats: WeeklyStats, aiText: string): string {
 
     <!-- CTA -->
     <div class="cta">
-      <a href="${process.env.CLIENT_URL || 'https://drouaissignal.fr'}/admin">
+      <a href="${process.env.CLIENT_URL || 'https://onsignale.fr'}/admin">
         Accéder au dashboard →
       </a>
     </div>
@@ -347,8 +347,8 @@ function buildEmailHtml(stats: WeeklyStats, aiText: string): string {
   </div>
 
   <div class="footer">
-    DrouaisSignal — Service de signalement urbain citoyen<br>
-    <a href="${process.env.CLIENT_URL || 'https://drouaissignal.fr'}/admin/parametres"
+    OnSignale — Service de signalement urbain citoyen<br>
+    <a href="${process.env.CLIENT_URL || 'https://onsignale.fr'}/admin/parametres"
        style="color:#9CA3AF;">
       Gérer les destinataires
     </a>
@@ -381,7 +381,7 @@ async function sendEmails(emailHtml: string, stats: WeeklyStats): Promise<void> 
   const isDev = process.env.NODE_ENV !== 'production'
   const fromEmail = isDev
     ? 'onboarding@resend.dev'
-    : 'DrouaisSignal <rapport@drouaissignal.fr>'
+    : 'OnSignale <rapport@onsignale.fr>'
 
   // Envoyer à chaque destinataire
   for (const recipient of recipients) {
@@ -390,7 +390,7 @@ async function sendEmails(emailHtml: string, stats: WeeklyStats): Promise<void> 
       const result = await resend.emails.send({
         from: fromEmail,
         to: recipient.email,
-        subject: `📊 Résumé hebdomadaire DrouaisSignal — Semaine du ${stats.period.from}`,
+        subject: `📊 Résumé hebdomadaire OnSignale — Semaine du ${stats.period.from}`,
         html: emailHtml,
       })
       console.log(`[WeeklyReport] ✓ Réponse Resend complète:`, JSON.stringify(result, null, 2))

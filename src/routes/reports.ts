@@ -221,12 +221,12 @@ router.patch('/:id/status', verifyToken, requireAdmin, async (req: Request, res:
         const resend = new Resend(process.env.RESEND_API_KEY)
 
         await resend.emails.send({
-          from: process.env.EMAIL_FROM || 'DrouaisSignal <notifications@drouaissignal.fr>',
+          from: process.env.EMAIL_FROM || 'OnSignale <notifications@onsignale.fr>',
           to: reportUser.user.email,
           subject: `Votre signalement a été mis à jour — ${statusLabels[status]}`,
           html: `
             <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
-              <h2 style="color: #1A56A0; margin-bottom: 16px;">DrouaisSignal</h2>
+              <h2 style="color: #1A56A0; margin-bottom: 16px;">OnSignale</h2>
               <p>Bonjour,</p>
               <p>Le statut de votre signalement a été mis à jour :</p>
               <p style="

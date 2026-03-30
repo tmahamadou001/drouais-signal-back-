@@ -78,6 +78,6 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 // ─── Start ───
 app.listen(PORT, () => {
-  console.log(`🛡️  DrouaisSignal API démarrée sur http://localhost:${PORT}`)
+  console.log(`🛡️  OnSignale API démarrée sur http://localhost:${PORT}`)
   console.log(`   Client attendu sur: ${process.env.CLIENT_URL || 'http://localhost:5173'}`)
 })
