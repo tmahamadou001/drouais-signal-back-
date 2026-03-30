@@ -378,10 +378,7 @@ async function sendEmails(emailHtml: string, stats: WeeklyStats): Promise<void> 
   console.log(`[WeeklyReport] Envoi à ${recipients.length} destinataire(s)`)
 
   // Déterminer l'expéditeur selon l'environnement
-  const isDev = process.env.NODE_ENV !== 'production'
-  const fromEmail = isDev
-    ? 'onboarding@resend.dev'
-    : 'OnSignale <rapport@onsignale.fr>'
+  const fromEmail = 'OnSignale <rapport@onsignale.fr>'
 
   // Envoyer à chaque destinataire
   for (const recipient of recipients) {
