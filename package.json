@@ -7,7 +7,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "seed": "tsx src/scripts/seed.ts"
+    "seed": "tsx src/scripts/seed.ts",
+    "seed:large": "tsx src/scripts/seed-large.ts",
+    "clean": "tsx src/scripts/clean.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",

@@ -7,6 +7,7 @@ import duplicatesRouter from './routes/duplicates.js'
 import votesRouter from './routes/votes.js'
 import analyzeRouter from './routes/analyze.js'
 import mapRouter from './routes/map.js'
+import heatmapRouter from './routes/heatmap.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
@@ -44,6 +45,14 @@ const analyzeLimiter = rateLimit({
   legacyHeaders: false,
 })
 
+const heatmapLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 30,
+  message: { error: 'rate_limit', message: 'Trop de requêtes heatmap. Réessayez dans 1 minute.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
 // ─── Routes ───
 app.use('/api/reports', reportsRouter)
 app.use('/api/admin', adminRouter)
@@ -51,6 +60,7 @@ app.use('/api/reports', duplicateCheckLimiter, duplicatesRouter)
 app.use('/api/reports', voteLimiter, votesRouter)
 app.use('/api/analyze-photo', analyzeLimiter, analyzeRouter)
 app.use('/api/map', mapRouter)
+app.use('/api/admin', heatmapLimiter, heatmapRouter)
 
 // ─── Health check ───
 app.get('/api/health', (_req, res) => {
