@@ -1,12 +1,12 @@
 import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { anthropic } from '../lib/anthropic.js'
 import { analyzePhotoWithGemini } from '../lib/gemini.js'
-import { uploadMemory } from '../middleware/uploadMemory.js'
+import { upload } from '../middleware/upload.js'
 
 const router: ExpressRouter = Router()
 
 // ─── POST /api/analyze-photo — Analyze photo with AI (Claude or Gemini) ───
-router.post('/', uploadMemory.single('photo'), async (req: Request, res: Response) => {
+router.post('/', upload.single('photo'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Photo requise' })

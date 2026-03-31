@@ -27,7 +27,6 @@ async function collectStats(): Promise<WeeklyStats> {
   const weekStart = new Date(now.getTime() - 7 * 24 * 3600 * 1000)
   const prevWeekStart = new Date(now.getTime() - 14 * 24 * 3600 * 1000)
 
-  // Requêtes parallèles
   const [
     newReportsResult,
     resolvedResult,
