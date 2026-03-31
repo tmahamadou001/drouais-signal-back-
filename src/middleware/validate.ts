@@ -9,8 +9,6 @@ export function validate(schema: z.ZodTypeAny) {
     next: NextFunction
   ) => {
     try {
-      // Valider et remplacer les données brutes par les données parsées et typées
-      // Zod transforme automatiquement les types (ex: string → number)
       const parsed = await schema.parseAsync({
         body: req.body,
         query: req.query,
