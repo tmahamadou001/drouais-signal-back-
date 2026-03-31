@@ -1,7 +1,7 @@
 import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken, requireAdmin } from '../middleware/auth.js'
-import { createReportSchema, updateReportSchema } from '../schemas/report.schema.js'
+import { createReportSchema, updateReportSchema, paginationSchema } from '../schemas/report.schema.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
@@ -9,7 +9,7 @@ import { validate } from '../middleware/validate.js'
 const router: ExpressRouter = Router()
 
 // ─── GET /api/reports — Public list of all reports with pagination ───
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', validate(paginationSchema), async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1
     const limit = parseInt(req.query.limit as string) || 20

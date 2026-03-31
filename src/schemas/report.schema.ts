@@ -19,3 +19,42 @@ export const updateReportSchema = z.object({
 export const voteReportSchema = z.object({
   vote_type: z.enum(['up', 'down']),
 })
+
+export const paginationSchema = z.object({
+  query: z.object({
+    page: z
+      .string()
+      .optional()
+      .default('1')
+      .transform(val => parseInt(val, 10))
+      .pipe(z.number().int().min(1, 'Page doit être >= 1')),
+    
+    limit: z
+      .string()
+      .optional()
+      .default('20')
+      .transform(val => parseInt(val, 10))
+      .pipe(
+        z.number()
+          .int()
+          .min(1, 'Limite doit être >= 1')
+          .max(100, 'Limite maximale : 100')
+      ),
+    
+    status: z
+      .enum(['en_attente', 'pris_en_charge', 'resolu', 'all'])
+      .optional()
+      .default('all'),
+    
+    category: z
+      .enum(['voirie', 'eclairage', 'dechets', 'autre', 'all'])
+      .optional()
+      .default('all'),
+    
+    search: z
+      .string()
+      .max(100, 'Recherche trop longue')
+      .trim()
+      .optional(),
+  }),
+})
