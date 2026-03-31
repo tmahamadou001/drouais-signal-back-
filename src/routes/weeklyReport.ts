@@ -1,6 +1,11 @@
 import { Router, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken, requireAdmin } from '../middleware/auth.js'
+import { validate } from '../middleware/validate.js'
+import {
+  addRecipientSchema,
+  updateRecipientSchema,
+} from '../schemas/weeklyReport.schema.js'
 import {
   generateAndSendWeeklyReport,
   generateReportPreview,
@@ -8,11 +13,9 @@ import {
 
 const router: ExpressRouter = Router()
 
-// Toutes les routes nécessitent l'authentification admin
 router.use(verifyToken, requireAdmin)
 
 // GET /api/admin/weekly-report/preview
-// Génère le rapport sans l'envoyer, retourne stats + html
 router.get('/weekly-report/preview', async (req, res) => {
   try {
     const { stats, html } = await generateReportPreview()
@@ -27,7 +30,6 @@ router.get('/weekly-report/preview', async (req, res) => {
 })
 
 // POST /api/admin/weekly-report/send
-// Génère et envoie immédiatement (pour test)
 router.post('/weekly-report/send', async (req, res) => {
   try {
     const stats = await generateAndSendWeeklyReport()
@@ -46,7 +48,6 @@ router.post('/weekly-report/send', async (req, res) => {
 })
 
 // GET /api/admin/weekly-report/recipients
-// Récupère tous les destinataires
 router.get('/weekly-report/recipients', async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
@@ -69,25 +70,9 @@ router.get('/weekly-report/recipients', async (req, res) => {
 })
 
 // POST /api/admin/weekly-report/recipients
-// Ajoute un nouveau destinataire
-router.post('/weekly-report/recipients', async (req, res) => {
+router.post('/weekly-report/recipients', validate(addRecipientSchema), async (req, res) => {
   try {
     const { email, name, role } = req.body
-
-    // Validation
-    if (!email || !name) {
-      return res.status(400).json({
-        error: 'Email et nom requis',
-      })
-    }
-
-    // Validation email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({
-        error: 'Format d\'email invalide',
-      })
-    }
 
     const { data, error } = await supabaseAdmin
       .from('weekly_report_recipients')
@@ -124,8 +109,7 @@ router.post('/weekly-report/recipients', async (req, res) => {
 })
 
 // PATCH /api/admin/weekly-report/recipients/:id
-// Met à jour un destinataire (notamment is_active)
-router.patch('/weekly-report/recipients/:id', async (req, res) => {
+router.patch('/weekly-report/recipients/:id', validate(updateRecipientSchema), async (req, res) => {
   try {
     const { id } = req.params
     const { email, name, role, is_active } = req.body
@@ -135,12 +119,6 @@ router.patch('/weekly-report/recipients/:id', async (req, res) => {
     if (name !== undefined) updates.name = name.trim()
     if (role !== undefined) updates.role = role
     if (is_active !== undefined) updates.is_active = is_active
-
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({
-        error: 'Aucune modification fournie',
-      })
-    }
 
     const { data, error } = await supabaseAdmin
       .from('weekly_report_recipients')
@@ -172,7 +150,6 @@ router.patch('/weekly-report/recipients/:id', async (req, res) => {
 })
 
 // DELETE /api/admin/weekly-report/recipients/:id
-// Soft delete : is_active = false
 router.delete('/weekly-report/recipients/:id', async (req, res) => {
   try {
     const { id } = req.params

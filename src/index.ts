@@ -1,6 +1,17 @@
 import express from 'express'
 import cors from 'cors'
-import rateLimit from 'express-rate-limit'
+import helmet from 'helmet'
+import {
+  globalApiLimiter,
+  authLimiter,
+  createReportLimiter,
+  duplicateCheckLimiter,
+  voteLimiter,
+  analyzeLimiter,
+  heatmapLimiter,
+  adminSlowDown,
+  weeklyReportLimiter,
+} from './middleware/rateLimits.js'
 import reportsRouter from './routes/reports.js'
 import adminRouter from './routes/admin.js'
 import duplicatesRouter from './routes/duplicates.js'
@@ -14,7 +25,24 @@ import './cron/weeklyReport.js'
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
 
-// ─── Middleware ───
+// ─── Trust proxy (obligatoire derrière Railway/Vercel/Cloudflare) ───
+app.set('trust proxy', 1)
+
+// ─── Security Headers (Helmet) ───
+app.use(helmet({
+  contentSecurityPolicy: false, // Désactiver CSP côté API (pas de HTML servi)
+}))
+app.disable('x-powered-by')
+
+// Headers manuels supplémentaires
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+  next()
+})
+
+// ─── CORS ───
 const allowedOrigins = [
   'http://localhost:5173',
   'https://onsignale.fr',
@@ -35,47 +63,22 @@ app.use(cors({
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
-// ─── Rate Limiting ───
-const duplicateCheckLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 10,
-  message: { error: 'rate_limit', message: 'Trop de requêtes. Réessayez dans 1 minute.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
-const voteLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 5,
-  message: { error: 'rate_limit', message: 'Trop de votes. Réessayez dans 1 minute.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
-const analyzeLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 10,
-  message: { error: 'rate_limit', message: 'Trop d\'analyses. Réessayez dans 1 minute.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
-
-const heatmapLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 30,
-  message: { error: 'rate_limit', message: 'Trop de requêtes heatmap. Réessayez dans 1 minute.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+// ─── Rate Limiting Global ───
+app.use('/api/', globalApiLimiter)
 
 // ─── Routes ───
+// Routes publiques avec rate limiting spécifique
 app.use('/api/reports', reportsRouter)
-app.use('/api/admin', adminRouter)
 app.use('/api/reports', duplicateCheckLimiter, duplicatesRouter)
 app.use('/api/reports', voteLimiter, votesRouter)
 app.use('/api/analyze-photo', analyzeLimiter, analyzeRouter)
 app.use('/api/map', mapRouter)
+
+// Routes admin avec slow down progressif
+app.use('/api/admin', adminSlowDown)
+app.use('/api/admin', adminRouter)
 app.use('/api/admin', heatmapLimiter, heatmapRouter)
+app.use('/api/admin/weekly-report/send', weeklyReportLimiter)
 app.use('/api/admin', weeklyReportRouter)
 
 // ─── Health check ───

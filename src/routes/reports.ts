@@ -1,8 +1,10 @@
 import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken, requireAdmin } from '../middleware/auth.js'
+import { createReportSchema, updateReportSchema } from '../schemas/report.schema.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
+import { validate } from '../middleware/validate.js'
 
 const router: ExpressRouter = Router()
 
@@ -87,19 +89,11 @@ router.get('/:id', async (req: Request, res: Response) => {
 })
 
 // ─── POST /api/reports — Create a new report ───
-router.post('/', verifyToken, upload.single('photo'), async (req: Request, res: Response) => {
+router.post('/', verifyToken, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response) => {
   try {
-    const { title, category, description, lat, lng, address_approx, ai_assisted } = req.body
 
-    // Validation
-    if (!title || !category || !lat || !lng) {
-      return res.status(400).json({ error: 'Champs obligatoires manquants (title, category, lat, lng).' })
-    }
-
-    const validCategories = ['voirie', 'eclairage', 'dechets', 'autre']
-    if (!validCategories.includes(category)) {
-      return res.status(400).json({ error: 'Catégorie invalide.' })
-    }
+    const { title, category, description, lat, lng, address_approx } = req.body
+    const ai_assisted = req.body.ai_assisted === 'true' || req.body.ai_assisted === true
 
     // Upload photo to Supabase Storage if present
     let photo_url: string | null = null
@@ -117,11 +111,13 @@ router.post('/', verifyToken, upload.single('photo'), async (req: Request, res: 
 
       if (uploadError) throw uploadError
 
-      const { data: urlData } = supabaseAdmin.storage
+      const { data: urlData, error: urlError } = await supabaseAdmin.storage
         .from('photos')
-        .getPublicUrl(filePath)
+        .createSignedUrl(filePath, 31536000)
 
-      photo_url = urlData.publicUrl
+      if (urlError) throw urlError
+
+      photo_url = urlData.signedUrl
     }
 
     // Insert report
@@ -137,7 +133,7 @@ router.post('/', verifyToken, upload.single('photo'), async (req: Request, res: 
         address_approx: address_approx?.trim() || null,
         status: 'en_attente',
         user_id: req.userId!,
-        ai_assisted: ai_assisted === 'true' || ai_assisted === true,
+        ai_assisted,
       })
       .select('id')
       .single()
@@ -155,22 +151,16 @@ router.post('/', verifyToken, upload.single('photo'), async (req: Request, res: 
     res.status(201).json({ id: data.id })
   } catch (err: any) {
     console.error('Erreur création signalement:', err)
-    res.status(500).json({ error: err.message || 'Erreur lors de la création du signalement.' })
+    res.status(500).json({ error: 'Erreur lors de la création du signalement.' })
   }
 })
 
 // ─── PATCH /api/reports/:id/status — Admin: update report status ───
-router.patch('/:id/status', verifyToken, requireAdmin, async (req: Request, res: Response) => {
+router.patch('/:id/status', verifyToken, requireAdmin,validate(updateReportSchema), async (req: Request, res: Response) => {
   try {
     const { id } = req.params
     const { status, comment } = req.body
 
-    const validStatuses = ['en_attente', 'pris_en_charge', 'resolu']
-    if (!status || !validStatuses.includes(status)) {
-      return res.status(400).json({ error: 'Statut invalide.' })
-    }
-
-    // Get current report
     const { data: currentReport, error: fetchError } = await supabaseAdmin
       .from('reports')
       .select('status, user_id')
