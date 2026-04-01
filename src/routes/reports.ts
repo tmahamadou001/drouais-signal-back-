@@ -5,6 +5,7 @@ import { createReportSchema, updateReportSchema, paginationSchema } from '../sch
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
+import { sendStatusChangeNotification } from '../services/notificationService.js'
 
 const router: ExpressRouter = Router()
 
@@ -163,7 +164,7 @@ router.patch('/:id/status', verifyToken, requireAdmin,validate(updateReportSchem
 
     const { data: currentReport, error: fetchError } = await supabaseAdmin
       .from('reports')
-      .select('status, user_id')
+      .select('id, title, status, category, address_approx, photo_url, created_at, user_id')
       .eq('id', id)
       .single()
 
@@ -173,18 +174,18 @@ router.patch('/:id/status', verifyToken, requireAdmin,validate(updateReportSchem
 
     const oldStatus = currentReport.status
 
-    // Update report
-    const { error: updateError } = await supabaseAdmin
+    const { data: updatedReport, error: updateError } = await supabaseAdmin
       .from('reports')
       .update({
         status,
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
+      .select()
+      .single()
 
     if (updateError) throw updateError
 
-    // Insert status history
     await supabaseAdmin.from('status_history').insert({
       report_id: id,
       old_status: oldStatus,
@@ -194,62 +195,22 @@ router.patch('/:id/status', verifyToken, requireAdmin,validate(updateReportSchem
       comment: comment || null,
     })
 
-    // Send email notification via Resend
-    try {
-      const { data: reportUser } = await supabaseAdmin.auth.admin.getUserById(
-        currentReport.user_id
-      )
+    res.json({ data: updatedReport })
 
-      if (reportUser?.user?.email && process.env.RESEND_API_KEY) {
-        const statusLabels: Record<string, string> = {
-          en_attente: 'En attente',
-          pris_en_charge: 'Pris en charge',
-          resolu: 'Résolu',
-        }
+    sendStatusChangeNotification({
+      reportId: currentReport.id,
+      reportTitle: currentReport.title,
+      newStatus: status,
+      previousStatus: oldStatus,
+      category: currentReport.category,
+      addressApprox: currentReport.address_approx,
+      photoUrl: currentReport.photo_url,
+      createdAt: currentReport.created_at,
+      userId: currentReport.user_id,
+    }).catch(err => {
+      console.error('[Notification] Erreur background:', err)
+    })
 
-        const { Resend } = await import('resend')
-        const resend = new Resend(process.env.RESEND_API_KEY)
-
-        await resend.emails.send({
-          from: process.env.EMAIL_FROM || 'OnSignale <notifications@onsignale.fr>',
-          to: reportUser.user.email,
-          subject: `Votre signalement a été mis à jour — ${statusLabels[status]}`,
-          html: `
-            <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
-              <h2 style="color: #1A56A0; margin-bottom: 16px;">OnSignale</h2>
-              <p>Bonjour,</p>
-              <p>Le statut de votre signalement a été mis à jour :</p>
-              <p style="
-                display: inline-block;
-                padding: 8px 16px;
-                border-radius: 8px;
-                font-weight: 600;
-                background: ${status === 'resolu' ? '#E6F7F1' : '#FEF5E7'};
-                color: ${status === 'resolu' ? '#1D9E75' : '#EF9F27'};
-              ">
-                ${statusLabels[oldStatus]} → ${statusLabels[status]}
-              </p>
-              ${comment ? `<p style="margin-top: 12px; color: #525252;">Commentaire : ${comment}</p>` : ''}
-              <p style="margin-top: 24px;">
-                <a href="${process.env.CLIENT_URL}/signalement/${id}" style="
-                  display: inline-block; padding: 10px 20px;
-                  background: #1A56A0; color: white; text-decoration: none;
-                  border-radius: 8px; font-weight: 600;
-                ">Voir mon signalement</a>
-              </p>
-              <p style="margin-top: 24px; font-size: 12px; color: #A3A3A3;">
-                Ville de Dreux — Service de signalement urbain
-              </p>
-            </div>
-          `,
-        })
-      }
-    } catch (emailErr) {
-      // Don't fail the request if email fails
-      console.error('Erreur envoi email:', emailErr)
-    }
-
-    res.json({ success: true })
   } catch (err: any) {
     console.error('Erreur mise à jour statut:', err)
     res.status(500).json({ error: err.message || 'Erreur serveur.' })
