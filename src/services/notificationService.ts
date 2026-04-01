@@ -1,6 +1,6 @@
 import { Resend } from 'resend'
 import { createClient } from '@supabase/supabase-js'
-import { buildStatusEmail } from '../templates/statusNotification'
+import { buildStatusEmail } from '../templates/statusNotification.js'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
