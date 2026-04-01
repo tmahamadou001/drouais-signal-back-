@@ -72,7 +72,7 @@ async function clean() {
     
     process.exit(0)
   } catch (err) {
-    console.error('❌ Erreur fatale:', err)
+    console.error('❌ Erreur:', err)
     process.exit(1)
   }
 }
