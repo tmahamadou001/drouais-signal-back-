@@ -20,10 +20,17 @@ import analyzeRouter from './routes/analyze.js'
 import mapRouter from './routes/map.js'
 import heatmapRouter from './routes/heatmap.js'
 import weeklyReportRouter from './routes/weeklyReport.js'
+import compression from 'compression'
 import './cron/weeklyReport.js'
+
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
+
+app.use(compression({
+  threshold: 1024,
+  level: 6,
+}))
 
 // ─── Trust proxy (obligatoire derrière Railway/Vercel/Cloudflare) ───
 app.set('trust proxy', 1)
