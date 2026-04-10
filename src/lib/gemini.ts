@@ -1,28 +1,39 @@
 // Gemini AI integration for photo analysis
 // Alternative provider to Claude
 
-const GEMINI_PROMPT = `Tu es un assistant qui analyse des photos de problèmes urbains signalés par des citoyens français.
+export interface TenantCategoryForPrompt {
+  slug: string
+  label: string
+  description?: string | null
+}
+
+function buildGeminiPrompt(categories: TenantCategoryForPrompt[]): string {
+  const fallbackSlug = categories[categories.length - 1]?.slug ?? 'autre'
+  const slugList = categories.map((c) => `"${c.slug}"`).join(' | ')
+  const rules = categories
+    .map((c) => `- ${c.slug} : ${c.description ?? c.label}`)
+    .join('\n')
+
+  return `Tu es un assistant qui analyse des photos de problèmes urbains signalés par des citoyens français.
 Retourne UNIQUEMENT un objet JSON valide, sans texte avant ou après, sans balises markdown.
 
 Analyse cette photo et retourne ce JSON :
 {
-  "category": "voirie" | "eclairage" | "dechets" | "autre",
+  "category": ${slugList},
   "title": "titre court en français, max 60 caractères",
   "confidence": "fort" | "moyen" | "faible",
   "description": "une phrase descriptive en français, max 120 caractères"
 }
 
 Règles de catégorisation :
-- voirie : nid-de-poule, trottoir cassé, route abîmée, signalisation routière
-- eclairage : lampadaire cassé ou éteint, câble apparent, zone mal éclairée
-- dechets : dépôt sauvage, poubelle renversée, encombrants, graffiti, tags
-- autre : tout ce qui ne rentre pas dans les catégories ci-dessus
+${rules}
 
 Si l'image n'est pas un problème urbain, retourne :
-{"category":"autre","title":"Signalement divers","confidence":"faible","description":"Impossible d'identifier le problème"}`
+{"category":"${fallbackSlug}","title":"Signalement divers","confidence":"faible","description":"Impossible d'identifier le problème"}`
+}
 
-interface GeminiAnalysisResult {
-  category: 'voirie' | 'eclairage' | 'dechets' | 'autre'
+export interface GeminiAnalysisResult {
+  category: string
   title: string
   confidence: 'fort' | 'moyen' | 'faible'
   description: string
@@ -31,10 +42,12 @@ interface GeminiAnalysisResult {
 
 export async function analyzePhotoWithGemini(
   base64Image: string,
-  mimeType: string
+  mimeType: string,
+  categories: TenantCategoryForPrompt[]
 ): Promise<GeminiAnalysisResult> {
+  const fallbackSlug = categories[categories.length - 1]?.slug ?? 'autre'
   const fallback: GeminiAnalysisResult = {
-    category: 'autre',
+    category: fallbackSlug,
     title: '',
     confidence: 'faible',
     description: '',
@@ -63,7 +76,7 @@ export async function analyzePhotoWithGemini(
                   },
                 },
                 {
-                  text: GEMINI_PROMPT,
+                  text: buildGeminiPrompt(categories),
                 },
               ],
             },
@@ -118,11 +131,11 @@ export async function analyzePhotoWithGemini(
     // const result = JSON.parse(cleaned)
 
     // Valider les champs obligatoires
-    const validCategories = ['voirie', 'eclairage', 'dechets', 'autre']
+    const validCategories = categories.map((c) => c.slug)
     const validConfidences = ['fort', 'moyen', 'faible']
 
     if (!validCategories.includes(result.category)) {
-      result.category = 'autre'
+      result.category = fallbackSlug
     }
     if (!validConfidences.includes(result.confidence)) {
       result.confidence = 'moyen'

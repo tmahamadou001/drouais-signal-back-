@@ -1,6 +1,7 @@
 import { Router, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
-import { verifyToken, requireAdmin } from '../middleware/auth.js'
+import { verifyToken } from '../middleware/auth.js'
+import { requireTenantAdmin } from '../middleware/roleGuard.js'
 
 const router: ExpressRouter = Router()
 
@@ -30,7 +31,7 @@ interface Hotspot {
   address_approx: string | null
 }
 
-router.get('/heatmap', verifyToken, requireAdmin, async (req, res) => {
+router.get('/heatmap', verifyToken, requireTenantAdmin, async (req, res) => {
   try {
     const { period = '30d', category = 'all', status = 'all' } = req.query
 
@@ -39,6 +40,10 @@ router.get('/heatmap', verifyToken, requireAdmin, async (req, res) => {
       .select('id, lat, lng, category, status, vote_count, address_approx, created_at')
       .not('lat', 'is', null)
       .not('lng', 'is', null)
+
+    if (req.tenant?.id) {
+      query = query.eq('tenant_id', req.tenant.id)
+    }
 
     // Filtre période
     if (period !== 'all') {

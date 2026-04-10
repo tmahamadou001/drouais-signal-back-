@@ -75,7 +75,7 @@ router.post('/check-duplicate', async (req: Request, res: Response) => {
       })
     }
 
-    const { data, error } = await supabaseAdmin.rpc('find_nearby_reports', {
+    const { data: rpcData, error } = await supabaseAdmin.rpc('find_nearby_reports', {
       p_lat: lat,
       p_lng: lng,
       p_radius_meters: 80,
@@ -88,6 +88,19 @@ router.post('/check-duplicate', async (req: Request, res: Response) => {
         error: 'database_error',
         message: 'Erreur lors de la recherche de signalements similaires.',
       })
+    }
+
+    // Filtrer par tenant si disponible
+    let data = rpcData
+    if (req.tenant?.id && data && data.length > 0) {
+      const ids = data.map((r: any) => r.id)
+      const { data: tenantReports } = await supabaseAdmin
+        .from('reports')
+        .select('id')
+        .in('id', ids)
+        .eq('tenant_id', req.tenant.id)
+      const validIds = new Set((tenantReports ?? []).map((r: any) => r.id))
+      data = data.filter((r: any) => validIds.has(r.id))
     }
 
     if (!data || data.length === 0) {

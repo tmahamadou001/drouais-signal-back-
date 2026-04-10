@@ -4,7 +4,7 @@ export const createReportSchema = z.object({
   body: z.object({
     title: z.string().min(3, 'Le titre doit contenir au moins 3 caractères').max(200, 'Le titre ne peut pas dépasser 200 caractères'),
     description: z.string().min(1, 'La description doit contenir au moins 10 caractères').max(2000, 'La description ne peut pas dépasser 2000 caractères'),
-    category: z.enum(['voirie', 'eclairage', 'dechets', 'autre']),
+    category: z.string().min(1, 'La catégorie est requise'),
     lat: z.string(),
     lng: z.string(),
     address_approx: z.string().optional(),
@@ -53,7 +53,7 @@ export const paginationSchema = z.object({
       .default('all'),
     
     category: z
-      .enum(['voirie', 'eclairage', 'dechets', 'autre', 'all'])
+      .string()
       .optional()
       .default('all'),
     

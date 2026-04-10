@@ -4,11 +4,12 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 const router: ExpressRouter = Router()
 
 // ─── GET /api/admin/stats — Public stats (also used on home page) ───
-router.get('/stats', async (_req: Request, res: Response) => {
+router.get('/stats', async (req: Request, res: Response) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('reports')
-      .select('status')
+    let query = supabaseAdmin.from('reports').select('status')
+    if (req.tenant?.id) query = query.eq('tenant_id', req.tenant.id)
+
+    const { data, error } = await query
 
     if (error) throw error
 

@@ -45,9 +45,9 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
  * Check that the authenticated user has admin role.
  * Must be used AFTER verifyToken.
  */
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (req.userRole !== 'admin') {
-    return res.status(403).json({ error: 'Accès réservé aux administrateurs.' })
-  }
-  next()
-}
+// export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+//   if (req.userRole !== 'admin') {
+//     return res.status(403).json({ error: 'Accès réservé aux administrateurs.' })
+//   }
+//   next()
+// }

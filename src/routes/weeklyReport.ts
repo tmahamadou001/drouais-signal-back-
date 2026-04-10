@@ -1,6 +1,6 @@
 import { Router, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
-import { verifyToken, requireAdmin } from '../middleware/auth.js'
+import { verifyToken } from '../middleware/auth.js'
 import { validate } from '../middleware/validate.js'
 import {
   addRecipientSchema,
@@ -10,10 +10,11 @@ import {
   generateAndSendWeeklyReport,
   generateReportPreview,
 } from '../lib/weeklyReportGenerator.js'
+import { requireTenantAdmin } from '../middleware/roleGuard.js'
 
 const router: ExpressRouter = Router()
 
-router.use(verifyToken, requireAdmin)
+router.use(verifyToken, requireTenantAdmin)
 
 // GET /api/admin/weekly-report/preview
 router.get('/weekly-report/preview', async (req, res) => {
@@ -50,10 +51,14 @@ router.post('/weekly-report/send', async (req, res) => {
 // GET /api/admin/weekly-report/recipients
 router.get('/weekly-report/recipients', async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('weekly_report_recipients')
       .select('*')
       .order('created_at', { ascending: false })
+
+    if (req.tenant?.id) query = query.eq('tenant_id', req.tenant.id)
+
+    const { data, error } = await query
 
     if (error) {
       throw error
@@ -81,6 +86,7 @@ router.post('/weekly-report/recipients', validate(addRecipientSchema), async (re
         name: name.trim(),
         role: role || 'elu',
         is_active: true,
+        tenant_id: req.tenant?.id ?? null,
       })
       .select()
       .single()
@@ -120,12 +126,12 @@ router.patch('/weekly-report/recipients/:id', validate(updateRecipientSchema), a
     if (role !== undefined) updates.role = role
     if (is_active !== undefined) updates.is_active = is_active
 
-    const { data, error } = await supabaseAdmin
+    let updateQuery = supabaseAdmin
       .from('weekly_report_recipients')
       .update(updates)
       .eq('id', id)
-      .select()
-      .single()
+    if (req.tenant?.id) updateQuery = updateQuery.eq('tenant_id', req.tenant.id)
+    const { data, error } = await updateQuery.select().single()
 
     if (error) {
       if (error.code === 'PGRST116') {
@@ -154,12 +160,12 @@ router.delete('/weekly-report/recipients/:id', async (req, res) => {
   try {
     const { id } = req.params
 
-    const { data, error } = await supabaseAdmin
+    let deleteQuery = supabaseAdmin
       .from('weekly_report_recipients')
       .update({ is_active: false })
       .eq('id', id)
-      .select()
-      .single()
+    if (req.tenant?.id) deleteQuery = deleteQuery.eq('tenant_id', req.tenant.id)
+    const { data, error } = await deleteQuery.select().single()
 
     if (error) {
       if (error.code === 'PGRST116') {

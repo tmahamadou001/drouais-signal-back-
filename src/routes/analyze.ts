@@ -1,9 +1,28 @@
 import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { anthropic } from '../lib/anthropic.js'
-import { analyzePhotoWithGemini } from '../lib/gemini.js'
+import { analyzePhotoWithGemini, type TenantCategoryForPrompt } from '../lib/gemini.js'
 import { upload } from '../middleware/upload.js'
+import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 
 const router: ExpressRouter = Router()
+
+const DEFAULT_CATEGORIES: TenantCategoryForPrompt[] = [
+  { slug: 'voirie',    label: 'Voirie',    description: 'nid-de-poule, trottoir cassé, route abîmée, signalisation routière' },
+  { slug: 'eclairage', label: 'Éclairage', description: 'lampadaire cassé ou éteint, câble apparent, zone mal éclairée' },
+  { slug: 'dechets',   label: 'Déchets',   description: 'dépôt sauvage, poubelle renversée, encombrants, graffiti, tags' },
+  { slug: 'autre',     label: 'Autre',     description: 'tout ce qui ne rentre pas dans les catégories ci-dessus' },
+]
+
+async function getTenantCategories(tenantId?: string): Promise<TenantCategoryForPrompt[]> {
+  if (!tenantId) return DEFAULT_CATEGORIES
+  const { data } = await supabaseAdmin
+    .from('tenant_categories')
+    .select('slug, label, description')
+    .eq('tenant_id', tenantId)
+    .eq('is_active', true)
+    .order('sort_order')
+  return data && data.length > 0 ? data : DEFAULT_CATEGORIES
+}
 
 // ─── POST /api/analyze-photo — Analyze photo with AI (Claude or Gemini) ───
 router.post('/', upload.single('photo'), async (req: Request, res: Response) => {
@@ -16,6 +35,10 @@ router.post('/', upload.single('photo'), async (req: Request, res: Response) => 
     const base64Image = req.file.buffer.toString('base64')
     const mediaType = req.file.mimetype as 'image/jpeg' | 'image/png' | 'image/webp'
 
+    // Charger les catégories du tenant courant
+    const categories = await getTenantCategories(req.tenant?.id)
+    const fallbackSlug = categories[categories.length - 1]?.slug ?? 'autre'
+
     // Déterminer le provider à utiliser (GEMINI par défaut, CLAUDE si configuré)
     const aiProvider = process.env.AI_PROVIDER || 'GEMINI'
 
@@ -23,7 +46,7 @@ router.post('/', upload.single('photo'), async (req: Request, res: Response) => 
     // GEMINI PROVIDER
     // ═══════════════════════════════════════════════════════════════
     if (aiProvider === 'GEMINI') {
-      const result = await analyzePhotoWithGemini(base64Image, mediaType)
+      const result = await analyzePhotoWithGemini(base64Image, mediaType, categories)
       return res.json(result)
     }
 
@@ -35,13 +58,16 @@ router.post('/', upload.single('photo'), async (req: Request, res: Response) => 
       if (!process.env.ANTHROPIC_API_KEY) {
         console.error('ANTHROPIC_API_KEY non configurée')
         return res.json({
-          category: 'autre',
+          category: fallbackSlug,
           title: '',
           confidence: 'faible',
           description: '',
           error: 'service_unavailable',
         })
       }
+
+      const slugList = categories.map((c) => `"${c.slug}"`).join(' | ')
+      const rules = categories.map((c) => `- ${c.slug} : ${c.description ?? c.label}`).join('\n')
 
       // Appeler Claude avec timeout de 10 secondes
       const controller = new AbortController()
@@ -69,21 +95,18 @@ Tu dois répondre UNIQUEMENT en JSON valide, sans aucun texte avant ou après.`,
                   type: 'text',
                   text: `Analyse cette photo et retourne ce JSON :
 {
-  "category": "voirie" | "eclairage" | "dechets" | "autre",
+  "category": ${slugList},
   "title": "titre court en français, max 60 caractères",
   "confidence": "fort" | "moyen" | "faible",
   "description": "une phrase descriptive en français, max 120 caractères"
 }
 
 Règles de catégorisation :
-- voirie : nid-de-poule, trottoir cassé, route abîmée, signalisation routière, passage piéton effacé
-- eclairage : lampadaire cassé ou éteint, câble apparent, zone mal éclairée
-- dechets : dépôt sauvage, poubelle renversée, encombrants, graffiti, tags
-- autre : tout ce qui ne rentre pas dans les catégories ci-dessus
+${rules}
 
 Si l'image n'est pas un problème urbain (photo floue, hors-sujet, inappropriée), retourne :
 {
-  "category": "autre",
+  "category": "${fallbackSlug}",
   "title": "Signalement divers",
   "confidence": "faible",
   "description": "Impossible d'identifier le problème sur la photo"
@@ -122,7 +145,7 @@ Si l'image n'est pas un problème urbain (photo floue, hors-sujet, inappropriée
         // Timeout ou erreur API
         if (err.name === 'AbortError' || err.message?.includes('timeout')) {
           return res.json({
-            category: 'autre',
+            category: fallbackSlug,
             title: '',
             confidence: 'faible',
             description: '',
@@ -133,7 +156,7 @@ Si l'image n'est pas un problème urbain (photo floue, hors-sujet, inappropriée
         // JSON invalide ou autre erreur
         console.error('Erreur analyse Claude:', err)
         return res.json({
-          category: 'autre',
+          category: fallbackSlug,
           title: '',
           confidence: 'faible',
           description: '',

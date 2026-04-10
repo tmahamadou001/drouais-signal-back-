@@ -1,11 +1,12 @@
 import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
-import { verifyToken, requireAdmin } from '../middleware/auth.js'
+import { verifyToken } from '../middleware/auth.js'
 import { createReportSchema, updateReportSchema, paginationSchema } from '../schemas/report.schema.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
 import { sendStatusChangeNotification } from '../services/notificationService.js'
+import { requireTenantAdmin } from '../middleware/roleGuard.js'
 
 const router: ExpressRouter = Router()
 
@@ -15,20 +16,18 @@ router.get('/', validate(paginationSchema), async (req: Request, res: Response) 
     const page = parseInt(req.query.page as string) || 1
     const limit = parseInt(req.query.limit as string) || 20
     const offset = (page - 1) * limit
+    const tenantId = req.tenant?.id
 
-    // Get total count
-    const { count, error: countError } = await supabaseAdmin
-      .from('reports')
-      .select('*', { count: 'exact', head: true })
+    let countQuery = supabaseAdmin.from('reports').select('*', { count: 'exact', head: true })
+    if (tenantId) countQuery = countQuery.eq('tenant_id', tenantId)
 
+    const { count, error: countError } = await countQuery
     if (countError) throw countError
 
-    // Get paginated data
-    const { data, error } = await supabaseAdmin
-      .from('reports')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1)
+    let dataQuery = supabaseAdmin.from('reports').select('*').order('created_at', { ascending: false }).range(offset, offset + limit - 1)
+    if (tenantId) dataQuery = dataQuery.eq('tenant_id', tenantId)
+
+    const { data, error } = await dataQuery
 
     if (error) throw error
 
@@ -49,11 +48,15 @@ router.get('/', validate(paginationSchema), async (req: Request, res: Response) 
 // ─── GET /api/reports/mine — Reports of the logged-in user ───
 router.get('/mine', verifyToken, async (req: Request, res: Response) => {
   try {
-    const { data, error } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('reports')
       .select('*')
       .eq('user_id', req.userId!)
       .order('created_at', { ascending: false })
+
+    if (req.tenant?.id) query = query.eq('tenant_id', req.tenant.id)
+
+    const { data, error } = await query
 
     if (error) throw error
     res.json(data)
@@ -67,8 +70,11 @@ router.get('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params
 
+    let reportQuery = supabaseAdmin.from('reports').select('*').eq('id', id)
+    if (req.tenant?.id) reportQuery = reportQuery.eq('tenant_id', req.tenant.id)
+
     const [reportResult, historyResult] = await Promise.all([
-      supabaseAdmin.from('reports').select('*').eq('id', id).single(),
+      reportQuery.single(),
       supabaseAdmin
         .from('status_history')
         .select('*')
@@ -96,6 +102,21 @@ router.post('/', verifyToken, upload.single('photo'), validate(createReportSchem
     const { title, category, description, lat, lng, address_approx } = req.body
     const ai_assisted = req.body.ai_assisted === 'true' || req.body.ai_assisted === true
 
+    // Valider la catégorie contre les catégories actives du tenant
+    if (req.tenant?.id) {
+      const { data: validCategories } = await supabaseAdmin
+        .from('tenant_categories')
+        .select('slug')
+        .eq('tenant_id', req.tenant.id)
+        .eq('is_active', true)
+      if (validCategories && validCategories.length > 0) {
+        const validSlugs = validCategories.map((c: any) => c.slug)
+        if (!validSlugs.includes(category)) {
+          return res.status(400).json({ error: `Catégorie invalide : "${category}"` })
+        }
+      }
+    }
+
     // Upload photo to Supabase Storage if present
     let photo_url: string | null = null
     if (req.file) {
@@ -121,6 +142,10 @@ router.post('/', verifyToken, upload.single('photo'), validate(createReportSchem
       photo_url = urlData.signedUrl
     }
 
+    if (!req.tenant) {
+      return res.status(400).json({ error: 'Tenant requis pour créer un signalement.' })
+    }
+
     // Insert report
     const { data, error } = await supabaseAdmin
       .from('reports')
@@ -135,6 +160,7 @@ router.post('/', verifyToken, upload.single('photo'), validate(createReportSchem
         status: 'en_attente',
         user_id: req.userId!,
         ai_assisted,
+        tenant_id: req.tenant.id,
       })
       .select('id')
       .single()
@@ -147,6 +173,7 @@ router.post('/', verifyToken, upload.single('photo'), validate(createReportSchem
       old_status: 'en_attente',
       new_status: 'en_attente',
       changed_at: new Date().toISOString(),
+      tenant_id: req.tenant.id,
     })
 
     res.status(201).json({ id: data.id })
@@ -157,14 +184,14 @@ router.post('/', verifyToken, upload.single('photo'), validate(createReportSchem
 })
 
 // ─── PATCH /api/reports/:id/status — Admin: update report status ───
-router.patch('/:id/status', verifyToken, requireAdmin,validate(updateReportSchema), async (req: Request, res: Response) => {
+router.patch('/:id/status', verifyToken, requireTenantAdmin,validate(updateReportSchema), async (req: Request, res: Response) => {
   try {
     const { id } = req.params
     const { status, comment } = req.body
 
     const { data: currentReport, error: fetchError } = await supabaseAdmin
       .from('reports')
-      .select('id, title, status, category, address_approx, photo_url, created_at, user_id')
+      .select('id, title, status, category, address_approx, photo_url, created_at, user_id, tenant_id')
       .eq('id', id)
       .single()
 
@@ -193,6 +220,7 @@ router.patch('/:id/status', verifyToken, requireAdmin,validate(updateReportSchem
       agent_id: req.userId,
       changed_at: new Date().toISOString(),
       comment: comment || null,
+      tenant_id: req.tenant?.id ?? currentReport.tenant_id,
     })
 
     res.json({ data: updatedReport })

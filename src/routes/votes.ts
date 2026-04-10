@@ -50,6 +50,7 @@ router.post('/:id/vote', async (req: Request, res: Response) => {
       report_id: reportId,
       user_id: userId,
       anonymous_ip: anonymousIp,
+      tenant_id: req.tenant?.id ?? null,
     }
 
     const { error: insertError } = await supabaseAdmin

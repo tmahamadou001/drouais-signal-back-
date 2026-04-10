@@ -20,6 +20,8 @@ import analyzeRouter from './routes/analyze.js'
 import mapRouter from './routes/map.js'
 import heatmapRouter from './routes/heatmap.js'
 import weeklyReportRouter from './routes/weeklyReport.js'
+import tenantRouter from './routes/tenant.js'
+import { resolveTenant } from './middleware/tenantResolver.js'
 import compression from 'compression'
 import './cron/weeklyReport.js'
 
@@ -50,28 +52,37 @@ app.use((req, res, next) => {
 })
 
 // ─── CORS ───
-const allowedOrigins = [
-  'http://localhost:5173',
-  'https://onsignale.fr',
-  'https://www.onsignale.fr',
-  process.env.CLIENT_URL,
-].filter(Boolean)
-
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin) {
+      callback(null, true)
+      return
+    }
+    const allowed =
+      origin.endsWith('.onsignale.fr') ||
+      origin === 'https://onsignale.fr' ||
+      origin === 'https://www.onsignale.fr' ||
+      origin.includes('localhost') ||
+      origin === process.env.CLIENT_URL
+
+    if (allowed) {
       callback(null, true)
     } else {
-      callback(new Error('Not allowed by CORS'))
+      callback(new Error(`Not allowed by CORS: ${origin}`))
     }
   },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Slug'],
 }))
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
 // ─── Rate Limiting Global ───
 app.use('/api/', globalApiLimiter)
+
+// ─── Tenant Resolution (toutes les routes /api/) ───
+app.use('/api/', resolveTenant)
 
 // ─── Routes ───
 // Routes publiques avec rate limiting spécifique
@@ -80,6 +91,7 @@ app.use('/api/reports', duplicateCheckLimiter, duplicatesRouter)
 app.use('/api/reports', voteLimiter, votesRouter)
 app.use('/api/analyze-photo', analyzeLimiter, analyzeRouter)
 app.use('/api/map', mapRouter)
+app.use('/api/tenant', tenantRouter)
 
 // Routes admin avec slow down progressif
 app.use('/api/admin', adminSlowDown)
