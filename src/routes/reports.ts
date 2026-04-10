@@ -117,6 +117,34 @@ router.post('/', verifyToken, upload.single('photo'), validate(createReportSchem
       }
     }
 
+    // Valider que les coordonnées sont dans le périmètre du tenant
+    if (req.tenant?.id) {
+      const { data: tenantConfig } = await supabaseAdmin
+        .from('tenant_configs')
+        .select('map_lat, map_lng, map_radius_km')
+        .eq('tenant_id', req.tenant.id)
+        .single()
+
+      if (tenantConfig?.map_lat && tenantConfig?.map_lng) {
+        const reportLat = parseFloat(lat)
+        const reportLng = parseFloat(lng)
+        const radiusKm = tenantConfig.map_radius_km ?? 15
+
+        const R = 6371
+        const dLat = (reportLat - tenantConfig.map_lat) * Math.PI / 180
+        const dLng = (reportLng - tenantConfig.map_lng) * Math.PI / 180
+        const a = Math.sin(dLat / 2) ** 2
+          + Math.cos(tenantConfig.map_lat * Math.PI / 180) * Math.cos(reportLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+        const distanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+
+        if (distanceKm > radiusKm) {
+          return res.status(422).json({
+            error: `La position est en dehors de la zone autorisée (rayon : ${radiusKm} km).`,
+          })
+        }
+      }
+    }
+
     // Upload photo to Supabase Storage if present
     let photo_url: string | null = null
     if (req.file) {
