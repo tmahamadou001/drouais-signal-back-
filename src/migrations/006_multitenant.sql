@@ -153,31 +153,13 @@ SELECT
   id,
   unnest(ARRAY['voirie','eclairage','dechets','espaces_verts','mobilier_urbain','autre']),
   unnest(ARRAY['Voirie et chaussée','Éclairage public','Déchets et propreté','Espaces verts','Mobilier urbain','Autre']),
-  unnest(ARRAY['🛣️','💡','🗑️','🌿','🪑','📌']),
+  unnest(ARRAY['🚧','💡','🗑️','🌿','🪑','📌']),
   unnest(ARRAY['#EF4444','#F59E0B','#10B981','#22C55E','#6366F1','#6B7280']),
   generate_series(0, 5),
   unnest(ARRAY[72, 48, 48, 168, 168, 168])
 FROM tenants WHERE slug = 'dreux'
 ON CONFLICT (tenant_id, slug) DO NOTHING;
 
--- Migrer données existantes
-UPDATE reports
-SET tenant_id = (SELECT id FROM tenants WHERE slug = 'dreux')
-WHERE tenant_id IS NULL;
-
-UPDATE votes
-SET tenant_id = (SELECT id FROM tenants WHERE slug = 'dreux')
-WHERE tenant_id IS NULL;
-
-UPDATE weekly_report_recipients
-SET tenant_id = (SELECT id FROM tenants WHERE slug = 'dreux')
-WHERE tenant_id IS NULL;
-
-UPDATE status_history
-SET tenant_id = (
-  SELECT r.tenant_id FROM reports r WHERE r.id = status_history.report_id
-)
-WHERE tenant_id IS NULL;
 
 -- Vérifier zéro orphelins avant NOT NULL
 -- (exécuter d'abord pour vérifier, puis la partie NOT NULL séparément)
@@ -211,7 +193,7 @@ SELECT
   id,
   unnest(ARRAY['voirie','eclairage','dechets','autre']),
   unnest(ARRAY['Voirie','Éclairage','Déchets','Autre']),
-  unnest(ARRAY['🛣️','💡','🗑️','📌']),
+  unnest(ARRAY['🚧','💡','🗑️','📌']),
   unnest(ARRAY['#EF4444','#F59E0B','#10B981','#6B7280']),
   generate_series(0, 3),
   unnest(ARRAY[72, 48, 48, 168])
