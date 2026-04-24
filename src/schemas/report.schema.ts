@@ -8,6 +8,7 @@ export const createReportSchema = z.object({
     lat: z.string(),
     lng: z.string(),
     address_approx: z.string().optional(),
+    anonymous_email: z.string().email('Email invalide').optional(),
   })
 })
 

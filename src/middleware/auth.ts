@@ -15,6 +15,7 @@ declare global {
 /**
  * Verify the Supabase JWT from the Authorization header.
  * Attaches userId, userEmail, userRole to req.
+ * Returns 401 if token is invalid or missing.
  */
 export async function verifyToken(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization
@@ -38,6 +39,37 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
     next()
   } catch (err) {
     return res.status(401).json({ error: 'Erreur de vérification du token.' })
+  }
+}
+
+/**
+ * Optional token verification for anonymous support.
+ * Attaches userId, userEmail, userRole to req if token is valid.
+ * Continues to next middleware if no token or invalid token (userId will be undefined).
+ */
+export const verifyTokenOptional = async (req: Request, res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization
+  
+  if (!authHeader?.startsWith('Bearer ')) {
+    return next()
+  }
+
+  const token = authHeader.replace('Bearer ', '')
+
+  try {
+    const { data, error } = await supabaseAdmin.auth.getUser(token)
+
+    if (error || !data.user) {
+      return next()
+    }
+
+    req.userId = data.user.id
+    req.userEmail = data.user.email
+    req.userRole = data.user.user_metadata?.role || 'citizen'
+
+    next()
+  } catch (err) {
+    next()
   }
 }
 

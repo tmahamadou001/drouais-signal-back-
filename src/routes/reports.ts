@@ -1,6 +1,7 @@
 import { Router, Request, Response, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
-import { verifyToken } from '../middleware/auth.js'
+import { verifyToken, verifyTokenOptional } from '../middleware/auth.js'
+import { validateApiKey } from '../middleware/apiKey.js'
 import { createReportSchema, updateReportSchema, paginationSchema } from '../schemas/report.schema.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
@@ -65,6 +66,31 @@ router.get('/mine', verifyToken, async (req: Request, res: Response) => {
   }
 })
 
+// ─── GET /api/reports/anonymous/:token — Get anonymous report by token ───
+router.get('/anonymous/:token', async (req: Request, res: Response) => {
+  try {
+    const { token } = req.params
+
+    let reportQuery = supabaseAdmin
+      .from('reports')
+      .select('id, title, category, status, created_at, address_approx, lat, lng, photo_url')
+      .eq('anonymous_token', token)
+      .eq('is_anonymous', true)
+
+    if (req.tenant?.id) reportQuery = reportQuery.eq('tenant_id', req.tenant.id)
+
+    const reportResult = await reportQuery.single()
+
+    if (reportResult.error) {
+      return res.status(404).json({ error: 'Signalement introuvable.' })
+    }
+
+    res.json(reportResult.data)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  }
+})
+
 // ─── GET /api/reports/:id — Single report with history ───
 router.get('/:id', async (req: Request, res: Response) => {
   try {
@@ -95,12 +121,18 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 })
 
-// ─── POST /api/reports — Create a new report ───
-router.post('/', verifyToken, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response) => {
+// ─── POST /api/reports — Create a new report (authenticated or anonymous) ───
+router.post('/',verifyTokenOptional,  validateApiKey, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response) => {
   try {
 
-    const { title, category, description, lat, lng, address_approx } = req.body
+    const { title, category, description, lat, lng, address_approx, anonymous_email } = req.body
     const ai_assisted = req.body.ai_assisted === 'true' || req.body.ai_assisted === true
+    const isAnonymous = !req.userId
+    const anonymousToken = isAnonymous ? crypto.randomBytes(32).toString('hex') : null
+
+    if (isAnonymous && !req.apiKeyValid) {
+      return res.status(401).json({ error: 'Clé API invalide ou manquante pour les signalements anonymes.' })
+    }
 
     // Valider la catégorie contre les catégories actives du tenant
     if (req.tenant?.id) {
@@ -186,11 +218,14 @@ router.post('/', verifyToken, upload.single('photo'), validate(createReportSchem
         lng: parseFloat(lng),
         address_approx: address_approx?.trim() || null,
         status: 'en_attente',
-        user_id: req.userId!,
+        user_id: req.userId || null,
+        is_anonymous: isAnonymous,
+        anonymous_token: anonymousToken,
+        anonymous_email: isAnonymous && anonymous_email ? anonymous_email.trim() : null,
         ai_assisted,
         tenant_id: req.tenant.id,
       })
-      .select('id')
+      .select('id, anonymous_token')
       .single()
 
     if (error) throw error
@@ -204,7 +239,12 @@ router.post('/', verifyToken, upload.single('photo'), validate(createReportSchem
       tenant_id: req.tenant.id,
     })
 
-    res.status(201).json({ id: data.id })
+    const response: any = { id: data.id }
+    if (isAnonymous) {
+      response.anonymous_token = data.anonymous_token
+      console.log(`📝 [Anonymous Report] Token: ${anonymousToken?.substring(0, 8)}... | Email: ${anonymous_email || 'none'}`)
+    }
+    res.status(201).json(response)
   } catch (err: any) {
     console.error('Erreur création signalement:', err)
     res.status(500).json({ error: 'Erreur lors de la création du signalement.' })

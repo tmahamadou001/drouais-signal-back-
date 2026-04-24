@@ -3,8 +3,6 @@ import cors from 'cors'
 import helmet from 'helmet'
 import {
   globalApiLimiter,
-  authLimiter,
-  createReportLimiter,
   duplicateCheckLimiter,
   voteLimiter,
   analyzeLimiter,
@@ -73,7 +71,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Slug'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Slug', 'X-API-Key'],
 }))
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
