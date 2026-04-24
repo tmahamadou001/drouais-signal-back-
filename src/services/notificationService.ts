@@ -19,6 +19,8 @@ interface StatusChangeParams {
   photoUrl: string | null
   createdAt: string
   userId: string | null
+  isAnonymous?: boolean
+  anonymousToken?: string | null
 }
 
 export async function sendStatusChangeNotification(
@@ -70,6 +72,8 @@ export async function sendStatusChangeNotification(
     photoUrl: params.photoUrl,
     createdAt: params.createdAt,
     frontendUrl: process.env.FRONTEND_URL || 'https://onsignale.fr',
+    isAnonymous: params.isAnonymous,
+    anonymousToken: params.anonymousToken,
   })
 
   const subjects = {

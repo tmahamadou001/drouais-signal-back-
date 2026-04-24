@@ -52,12 +52,16 @@ interface StatusEmailParams {
   photoUrl: string | null
   createdAt: string
   frontendUrl: string
+  isAnonymous?: boolean
+  anonymousToken?: string | null
 }
 
-export function buildStatusEmail(params: StatusEmailParams): string {
+export const buildStatusEmail = (params: StatusEmailParams): string => {
   const config = STATUS_CONFIG[params.newStatus]
   const categoryLabel = CATEGORY_LABELS[params.category] || params.category
-  const reportUrl = `${params.frontendUrl}/signalement/${params.reportId}`
+  const reportUrl = params.isAnonymous && params.anonymousToken
+    ? `${params.frontendUrl}/signalement/suivi/${params.anonymousToken}`
+    : `${params.frontendUrl}/signalement/${params.reportId}`
   
   const formattedDate = new Date(params.createdAt).toLocaleDateString('fr-FR', {
     day: 'numeric',

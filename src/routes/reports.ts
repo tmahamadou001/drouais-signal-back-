@@ -259,7 +259,7 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin,validate(updateRepor
 
     const { data: currentReport, error: fetchError } = await supabaseAdmin
       .from('reports')
-      .select('id, title, status, category, address_approx, photo_url, created_at, user_id, tenant_id')
+      .select('id, title, status, category, address_approx, photo_url, created_at, user_id, tenant_id, is_anonymous, anonymous_token')
       .eq('id', id)
       .single()
 
@@ -303,6 +303,8 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin,validate(updateRepor
       photoUrl: currentReport.photo_url,
       createdAt: currentReport.created_at,
       userId: currentReport.user_id,
+      isAnonymous: currentReport.is_anonymous,
+      anonymousToken: currentReport.anonymous_token,
     }).catch(err => {
       console.error('[Notification] Erreur background:', err)
     })
