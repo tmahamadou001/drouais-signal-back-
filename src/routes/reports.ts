@@ -315,4 +315,115 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin,validate(updateRepor
   }
 })
 
+// ─── DELETE /api/reports/:id — Admin: delete a report ───
+router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+
+    const { data: currentReport, error: fetchError } = await supabaseAdmin
+      .from('reports')
+      .select('id, tenant_id, photo_url')
+      .eq('id', id)
+      .single()
+
+    if (fetchError || !currentReport) {
+      return res.status(404).json({ error: 'Signalement introuvable.' })
+    }
+
+    if (req.tenant?.id && currentReport.tenant_id !== req.tenant.id) {
+      return res.status(403).json({ error: 'Vous ne pouvez supprimer que les signalements de votre tenant.' })
+    }
+
+    if (currentReport.photo_url) {
+      try {
+        const urlObj = new URL(currentReport.photo_url)
+        const pathMatch = urlObj.pathname.match(/\/storage\/v1\/object\/sign\/photos\/(.+)\?/)
+        if (pathMatch && pathMatch[1]) {
+          const filePath = `reports/${pathMatch[1]}`
+          await supabaseAdmin.storage.from('photos').remove([filePath])
+        }
+      } catch (err) {
+        console.error('Erreur suppression photo:', err)
+      }
+    }
+
+    await supabaseAdmin.from('status_history').delete().eq('report_id', id)
+
+    const { error: deleteError } = await supabaseAdmin
+      .from('reports')
+      .delete()
+      .eq('id', id)
+
+    if (deleteError) throw deleteError
+
+    res.json({ success: true, message: 'Signalement supprimé avec succès.' })
+  } catch (err: any) {
+    console.error('Erreur suppression signalement:', err)
+    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  }
+})
+
+// ─── DELETE /api/reports/bulk — Admin: delete multiple reports ───
+router.delete('/', verifyToken, requireTenantAdmin, async (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Liste d\'IDs requise.' })
+    }
+
+    const { data: reports, error: fetchError } = await supabaseAdmin
+      .from('reports')
+      .select('id, tenant_id, photo_url')
+      .in('id', ids)
+
+    if (fetchError) throw fetchError
+
+    if (!reports || reports.length === 0) {
+      return res.status(404).json({ error: 'Aucun signalement trouvé.' })
+    }
+
+    const invalidReports = reports.filter(r => r.tenant_id !== req.tenant?.id)
+    if (invalidReports.length > 0) {
+      return res.status(403).json({ 
+        error: 'Vous ne pouvez supprimer que les signalements de votre tenant.',
+        invalidIds: invalidReports.map(r => r.id)
+      })
+    }
+
+    for (const report of reports) {
+      if (report.photo_url) {
+        try {
+          const urlObj = new URL(report.photo_url)
+          const pathMatch = urlObj.pathname.match(/\/storage\/v1\/object\/sign\/photos\/(.+)\?/)
+          if (pathMatch && pathMatch[1]) {
+            const filePath = `reports/${pathMatch[1]}`
+            await supabaseAdmin.storage.from('photos').remove([filePath])
+          }
+        } catch (err) {
+          console.error(`Erreur suppression photo pour ${report.id}:`, err)
+        }
+      }
+    }
+
+    await supabaseAdmin.from('status_history').delete().in('report_id', ids)
+
+    const { error: deleteError } = await supabaseAdmin
+      .from('reports')
+      .delete()
+      .in('id', ids)
+
+    if (deleteError) throw deleteError
+
+    res.json({ 
+      success: true, 
+      message: `${reports.length} signalement(s) supprimé(s) avec succès.`,
+      deletedCount: reports.length
+    })
+  } catch (err: any) {
+    console.error('Erreur suppression multiple:', err)
+    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  }
+})
+
 export default router
