@@ -3,7 +3,7 @@ import { getUnreadCount } from './comments.handler.js'
 import { verifyToken } from '../../middleware/auth.js'
 import { requireTenantAdmin } from '../../middleware/roleGuard.js'
 
-const router = Router()
+const router: Router = Router()
 
 // GET /api/comments/unread
 // → Dashboard agent : compteur non lus
