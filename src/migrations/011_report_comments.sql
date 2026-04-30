@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════
--- Migration : Conversations sur signalements (report_comments)
+-- Migration : Messages sur signalements (report_comments)
 -- Description : Table pour les messages entre agents et citoyens
 -- ═══════════════════════════════════════════════════════════════
 
