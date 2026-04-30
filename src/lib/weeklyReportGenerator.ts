@@ -22,10 +22,39 @@ function formatDate(date: Date): string {
   })
 }
 
-async function collectStats(): Promise<WeeklyStats> {
+/**
+ * Get the start of the current calendar week (Monday 00:00)
+ */
+function getWeekStart(date: Date = new Date()): Date {
+  const d = new Date(date)
+  const day = d.getDay()
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1) // Adjust when day is Sunday
+  const monday = new Date(d.setDate(diff))
+  monday.setHours(0, 0, 0, 0)
+  return monday
+}
+
+/**
+ * Get the end of the current calendar week (Sunday 23:59:59)
+ */
+function getWeekEnd(date: Date = new Date()): Date {
+  const weekStart = getWeekStart(date)
+  const sunday = new Date(weekStart)
+  sunday.setDate(sunday.getDate() + 6)
+  sunday.setHours(23, 59, 59, 999)
+  return sunday
+}
+
+async function collectStats(tenantId?: string): Promise<WeeklyStats> {
   const now = new Date()
-  const weekStart = new Date(now.getTime() - 7 * 24 * 3600 * 1000)
-  const prevWeekStart = new Date(now.getTime() - 14 * 24 * 3600 * 1000)
+  const weekStart = getWeekStart(now)
+  const weekEnd = getWeekEnd(now)
+  
+  // Previous week for comparison
+  const prevWeekStart = new Date(weekStart)
+  prevWeekStart.setDate(prevWeekStart.getDate() - 7)
+  const prevWeekEnd = new Date(weekStart)
+  prevWeekEnd.setMilliseconds(-1) // Just before current week starts
 
   const [
     newReportsResult,
@@ -37,51 +66,84 @@ async function collectStats(): Promise<WeeklyStats> {
     votesResult,
   ] = await Promise.all([
     // 1. Nouveaux signalements cette semaine
-    supabaseAdmin
-      .from('reports')
-      .select('category')
-      .gte('created_at', weekStart.toISOString()),
+    (async () => {
+      let query = supabaseAdmin
+        .from('reports')
+        .select('category')
+        .gte('created_at', weekStart.toISOString())
+        .lte('created_at', weekEnd.toISOString())
+      if (tenantId) query = query.eq('tenant_id', tenantId)
+      return query
+    })(),
 
     // 2. Signalements résolus cette semaine
-    supabaseAdmin
-      .from('reports')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'resolu')
-      .gte('updated_at', weekStart.toISOString()),
+    (async () => {
+      let query = supabaseAdmin
+        .from('reports')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'resolu')
+        .gte('updated_at', weekStart.toISOString())
+        .lte('updated_at', weekEnd.toISOString())
+      if (tenantId) query = query.eq('tenant_id', tenantId)
+      return query
+    })(),
 
     // 3. Signalements pris en charge cette semaine
-    supabaseAdmin
-      .from('reports')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'pris_en_charge')
-      .gte('updated_at', weekStart.toISOString()),
+    (async () => {
+      let query = supabaseAdmin
+        .from('reports')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'pris_en_charge')
+        .gte('updated_at', weekStart.toISOString())
+        .lte('updated_at', weekEnd.toISOString())
+      if (tenantId) query = query.eq('tenant_id', tenantId)
+      return query
+    })(),
 
     // 4. Signalements en retard (>7j sans résolution)
-    supabaseAdmin
-      .from('reports')
-      .select('id', { count: 'exact', head: true })
-      .neq('status', 'resolu')
-      .lt('created_at', weekStart.toISOString()),
+    (async () => {
+      let query = supabaseAdmin
+        .from('reports')
+        .select('id', { count: 'exact', head: true })
+        .neq('status', 'resolu')
+        .lt('created_at', prevWeekStart.toISOString())
+      if (tenantId) query = query.eq('tenant_id', tenantId)
+      return query
+    })(),
 
     // 5. Semaine précédente (pour delta)
-    supabaseAdmin
-      .from('reports')
-      .select('id', { count: 'exact', head: true })
-      .gte('created_at', prevWeekStart.toISOString())
-      .lt('created_at', weekStart.toISOString()),
+    (async () => {
+      let query = supabaseAdmin
+        .from('reports')
+        .select('id', { count: 'exact', head: true })
+        .gte('created_at', prevWeekStart.toISOString())
+        .lt('created_at', weekStart.toISOString())
+      if (tenantId) query = query.eq('tenant_id', tenantId)
+      return query
+    })(),
 
     // 6. Top 3 zones actives
-    supabaseAdmin
-      .from('reports')
-      .select('address_approx')
-      .gte('created_at', weekStart.toISOString())
-      .not('address_approx', 'is', null),
+    (async () => {
+      let query = supabaseAdmin
+        .from('reports')
+        .select('address_approx')
+        .gte('created_at', weekStart.toISOString())
+        .lte('created_at', weekEnd.toISOString())
+        .not('address_approx', 'is', null)
+      if (tenantId) query = query.eq('tenant_id', tenantId)
+      return query
+    })(),
 
     // 7. Total votes cette semaine
-    supabaseAdmin
-      .from('reports')
-      .select('vote_count')
-      .gte('created_at', weekStart.toISOString()),
+    (async () => {
+      let query = supabaseAdmin
+        .from('reports')
+        .select('vote_count')
+        .gte('created_at', weekStart.toISOString())
+        .lte('created_at', weekEnd.toISOString())
+      if (tenantId) query = query.eq('tenant_id', tenantId)
+      return query
+    })(),
   ])
 
   // Traitement des résultats
@@ -120,7 +182,7 @@ async function collectStats(): Promise<WeeklyStats> {
   return {
     period: {
       from: formatDate(weekStart),
-      to: formatDate(now),
+      to: formatDate(weekEnd),
     },
     new_reports: newReportsCount,
     resolved: resolvedCount,
@@ -418,11 +480,11 @@ export async function generateAndSendWeeklyReport(): Promise<WeeklyStats> {
   return stats
 }
 
-export async function generateReportPreview(): Promise<{
+export async function generateReportPreview(tenantId?: string): Promise<{
   stats: WeeklyStats
   html: string
 }> {
-  const stats = await collectStats()
+  const stats = await collectStats(tenantId)
   const aiText = await generateAiText(stats)
   const html = buildEmailHtml(stats, aiText)
   return { stats, html }

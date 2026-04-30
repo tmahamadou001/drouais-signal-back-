@@ -19,6 +19,9 @@ import mapRouter from './routes/map.js'
 import heatmapRouter from './routes/heatmap.js'
 import weeklyReportRouter from './routes/weeklyReport.js'
 import tenantRouter from './routes/tenant.js'
+import commentsRouter from './modules/comments/comments.router.js'
+import unreadCommentsRouter from './modules/comments/unread.router.js'
+import uploadRouter from './routes/upload.js'
 import { resolveTenant } from './middleware/tenantResolver.js'
 import compression from 'compression'
 import './cron/weeklyReport.js'
@@ -87,6 +90,9 @@ app.use('/api/', resolveTenant)
 app.use('/api/reports', reportsRouter)
 app.use('/api/reports', duplicateCheckLimiter, duplicatesRouter)
 app.use('/api/reports', voteLimiter, votesRouter)
+app.use('/api/reports/:reportId/comments', commentsRouter)
+app.use('/api/comments', unreadCommentsRouter)
+app.use('/api/upload', uploadRouter)
 app.use('/api/analyze-photo', analyzeLimiter, analyzeRouter)
 app.use('/api/map', mapRouter)
 app.use('/api/tenant', tenantRouter)

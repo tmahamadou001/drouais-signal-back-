@@ -19,7 +19,8 @@ router.use(verifyToken, requireTenantAdmin)
 // GET /api/admin/weekly-report/preview
 router.get('/weekly-report/preview', async (req, res) => {
   try {
-    const { stats, html } = await generateReportPreview()
+    const tenantId = req.tenant?.id
+    const { stats, html } = await generateReportPreview(tenantId)
     res.json({ stats, html })
   } catch (err: any) {
     console.error('Erreur génération preview:', err)

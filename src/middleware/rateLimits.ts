@@ -75,3 +75,12 @@ export const weeklyReportLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 })
+
+// Comments limiter (10 messages per hour)
+export const commentsLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 heure
+  max: 10,
+  message: { error: 'rate_limit', message: 'Trop de messages. Réessayez dans 1 heure.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
