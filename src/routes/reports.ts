@@ -8,6 +8,7 @@ import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
 import { sendStatusChangeNotification } from '../services/notificationService.js'
 import { requireTenantAdmin } from '../middleware/roleGuard.js'
+import { auditReportStatusChanged, auditReportDeleted, auditReportBulkDeleted } from '../services/auditService.js'
 
 const router: ExpressRouter = Router()
 
@@ -293,6 +294,20 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin,validate(updateRepor
 
     res.json({ data: updatedReport })
 
+    // Audit log
+    auditReportStatusChanged({
+      reportId: id,
+      reportTitle: currentReport.title,
+      oldStatus,
+      newStatus: status,
+      changedBy: req.userId!,
+      tenantId: req.tenant?.id,
+      tenantSlug: req.tenant?.slug,
+      comment,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
+
     sendStatusChangeNotification({
       reportId: currentReport.id,
       reportTitle: currentReport.title,
@@ -322,7 +337,7 @@ router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res:
 
     const { data: currentReport, error: fetchError } = await supabaseAdmin
       .from('reports')
-      .select('id, tenant_id, photo_url')
+      .select('id, title, tenant_id, photo_url')
       .eq('id', id)
       .single()
 
@@ -355,6 +370,17 @@ router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res:
       .eq('id', id)
 
     if (deleteError) throw deleteError
+
+    // Audit log
+    auditReportDeleted({
+      reportId: id,
+      reportTitle: currentReport.title,
+      deletedBy: req.userId!,
+      tenantId: req.tenant?.id,
+      tenantSlug: req.tenant?.slug,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
 
     res.json({ success: true, message: 'Signalement supprimé avec succès.' })
   } catch (err: any) {
@@ -414,6 +440,16 @@ router.delete('/', verifyToken, requireTenantAdmin, async (req: Request, res: Re
       .in('id', ids)
 
     if (deleteError) throw deleteError
+
+    // Audit log
+    auditReportBulkDeleted({
+      reportIds: ids,
+      deletedBy: req.userId!,
+      tenantId: req.tenant?.id,
+      tenantSlug: req.tenant?.slug,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
 
     res.json({ 
       success: true, 

@@ -3,6 +3,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
 import { requireTenant, invalidateTenantCache } from '../middleware/tenantResolver.js'
 import { requireTenantAdmin, requireSuperAdmin } from '../middleware/roleGuard.js'
+import { auditUserCreated, auditTenantCreated, auditTenantStatusChanged, createAuditLog } from '../services/auditService.js'
 
 const router: ExpressRouter = Router()
 
@@ -93,6 +94,20 @@ router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (r
       .single()
 
     if (error) return res.status(500).json({ error: error.message })
+
+    // Audit log
+    createAuditLog({
+      userId: req.userId,
+      action: 'tenant_config.updated',
+      entityType: 'tenant_config',
+      entityId: req.tenant!.id,
+      tenantId: req.tenant!.id,
+      tenantSlug: req.tenant!.slug,
+      metadata: { updated_fields: Object.keys(req.body) },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
+
     res.json(data)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
@@ -126,6 +141,23 @@ router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async 
       .select()
 
     if (error) return res.status(500).json({ error: error.message })
+
+    // Audit log
+    createAuditLog({
+      userId: req.userId,
+      action: 'tenant_categories.updated',
+      entityType: 'tenant_categories',
+      entityId: req.tenant!.id,
+      tenantId: req.tenant!.id,
+      tenantSlug: req.tenant!.slug,
+      metadata: { 
+        categories_count: categories.length,
+        category_slugs: categories.map((c: any) => c.slug)
+      },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
+
     res.json(data)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
@@ -207,6 +239,20 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
       .single()
 
     if (error) return res.status(500).json({ error: error.message })
+
+    // Audit log
+    auditUserCreated({
+      userId,
+      userEmail: email,
+      userRole: role,
+      createdBy: req.userId,
+      tenantId: req.tenant!.id,
+      tenantSlug: req.tenant!.slug,
+      metadata: { first_name: firstName, last_name: lastName, job_title: jobTitle },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
+
     res.status(201).json(data)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
@@ -330,6 +376,16 @@ router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Respo
       defaultCategories.map((cat: any) => ({ ...cat, tenant_id: tenant.id }))
     )
 
+    // Audit log
+    auditTenantCreated({
+      tenantId: tenant.id,
+      tenantSlug: slug,
+      tenantName: name,
+      createdBy: req.userId!,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
+
     res.status(201).json(tenant)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
@@ -347,6 +403,13 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
       return res.status(400).json({ error: 'Statut invalide' })
     }
 
+    // Récupérer l'ancien statut
+    const { data: currentTenant } = await supabaseAdmin
+      .from('tenants')
+      .select('status, slug')
+      .eq('id', tenantId)
+      .single()
+
     const { data, error } = await supabaseAdmin
       .from('tenants')
       .update({
@@ -361,6 +424,19 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
     if (error || !data) return res.status(404).json({ error: 'Tenant introuvable' })
 
     invalidateTenantCache(data.slug)
+
+    // Audit log
+    if (currentTenant && currentTenant.status !== status) {
+      auditTenantStatusChanged({
+        tenantId,
+        tenantSlug: data.slug,
+        oldStatus: currentTenant.status,
+        newStatus: status,
+        changedBy: req.userId!,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      }).catch(err => console.error('[Audit] Erreur:', err))
+    }
 
     res.json(data)
   } catch (err: any) {
