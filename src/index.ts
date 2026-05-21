@@ -22,6 +22,7 @@ import tenantRouter from './routes/tenant.js'
 import commentsRouter from './modules/comments/comments.router.js'
 import unreadCommentsRouter from './modules/comments/unread.router.js'
 import uploadRouter from './routes/upload.js'
+import auditRouter from './routes/audit.js'
 import { resolveTenant } from './middleware/tenantResolver.js'
 import compression from 'compression'
 import './cron/weeklyReport.js'
@@ -103,6 +104,7 @@ app.use('/api/admin', adminRouter)
 app.use('/api/admin', heatmapLimiter, heatmapRouter)
 app.use('/api/admin/weekly-report/send', weeklyReportLimiter)
 app.use('/api/admin', weeklyReportRouter)
+app.use('/api/audit', auditRouter)
 
 // ─── Health check ───
 app.get('/api/health', (_req, res) => {
