@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 export const createReportSchema = z.object({
   body: z.object({
-    title: z.string().min(3, 'Le titre doit contenir au moins 3 caractères').max(200, 'Le titre ne peut pas dépasser 200 caractères'),
+    title: z.string().min(1, 'Le titre doit contenir au moins 1 caractère').max(200, 'Le titre ne peut pas dépasser 200 caractères'),
     description: z.string().max(4000, 'La description ne peut pas dépasser 4000 caractères'),
     category: z.string().min(1, 'La catégorie est requise'),
     lat: z.string(),
