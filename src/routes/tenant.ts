@@ -208,7 +208,7 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
       await supabaseAdmin.auth.admin.createUser({
         email,
         email_confirm: true,
-        user_metadata: { role: 'agent' },
+        app_metadata: { role: 'agent' },
       })
 
     if (userError?.message?.includes('already registered')) {

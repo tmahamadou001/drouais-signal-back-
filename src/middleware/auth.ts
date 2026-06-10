@@ -34,7 +34,7 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
 
     req.userId = data.user.id
     req.userEmail = data.user.email
-    req.userRole = data.user.user_metadata?.role || 'citizen'
+    req.userRole = data.user.app_metadata?.role || 'citizen'
 
     next()
   } catch (err) {
@@ -49,7 +49,7 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
  */
 export const verifyTokenOptional = async (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization
-  
+
   if (!authHeader?.startsWith('Bearer ')) {
     return next()
   }
@@ -65,7 +65,7 @@ export const verifyTokenOptional = async (req: Request, res: Response, next: Nex
 
     req.userId = data.user.id
     req.userEmail = data.user.email
-    req.userRole = data.user.user_metadata?.role || 'citizen'
+    req.userRole = data.user.app_metadata?.role || 'citizen'
 
     next()
   } catch (err) {

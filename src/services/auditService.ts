@@ -62,7 +62,7 @@ export type AuditEntityType =
 
 /**
  * Récupère l'email et le rôle d'un utilisateur
- * - Super admin / Citoyen : rôle dans auth.users.user_metadata
+ * - Super admin / Citoyen : rôle dans auth.users.app_metadata
  * - Admin / Agent tenant : rôle dans tenant_users
  */
 async function enrichUserData(userId: string, tenantId?: string): Promise<UserEnrichment> {
@@ -77,8 +77,8 @@ async function enrichUserData(userId: string, tenantId?: string): Promise<UserEn
     const email = authUser.user.email ?? null
     let role: string | null = null
 
-    // 1. Vérifier si c'est un super admin (dans user_metadata)
-    const metadataRole = authUser.user.user_metadata?.role
+    // 1. Vérifier si c'est un super admin (dans app_metadata — non modifiable par l'utilisateur)
+    const metadataRole = authUser.user.app_metadata?.role
     if (metadataRole === 'super_admin') {
       role = 'super_admin'
     } 

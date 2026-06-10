@@ -91,7 +91,7 @@ USING (
     AND tu.is_active = true
   )
   OR (
-    (auth.jwt() -> 'user_metadata' ->> 'role')
+    (auth.jwt() -> 'app_metadata' ->> 'role')
     = 'super_admin'
   )
 );

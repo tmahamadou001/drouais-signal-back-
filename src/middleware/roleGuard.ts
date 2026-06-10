@@ -17,7 +17,7 @@ async function getUserTenantRole(
 
   // Vérifier le rôle global (super_admin, citizen)
   const { data: userData } = await supabaseAdmin.auth.admin.getUserById(userId)
-  const globalRole = userData?.user?.user_metadata?.role
+  const globalRole = userData?.user?.app_metadata?.role
 
   if (globalRole === 'super_admin') {
     roleCache.set(cacheKey, { role: 'super_admin', expiresAt: Date.now() + 30_000 })
