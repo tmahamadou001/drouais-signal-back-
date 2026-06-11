@@ -1,9 +1,18 @@
 import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import type { UserRole } from '../types/tenant.js'
+import { AppError } from './errorHandler.js'
 
 // Cache rôle utilisateur — TTL 30 secondes
-const roleCache = new Map<string, { role: UserRole; expiresAt: number }>()
+export const roleCache = new Map<string, { role: UserRole; expiresAt: number }>()
+
+// Purge des entrées expirées toutes les 5 minutes
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, value] of roleCache.entries()) {
+    if (value.expiresAt <= now) roleCache.delete(key)
+  }
+}, 5 * 60 * 1000).unref()
 
 async function getUserTenantRole(
   userId: string,
@@ -42,23 +51,19 @@ async function getUserTenantRole(
 export function requireRole(...allowedRoles: UserRole[]) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (!req.userId) {
-      res.status(401).json({ error: 'Non authentifié' })
+      next(new AppError(401, 'unauthorized', 'Non authentifié.'))
       return
     }
 
     if (!req.tenant) {
-      res.status(400).json({ error: 'Tenant requis' })
+      next(new AppError(400, 'bad_request', 'Tenant requis.'))
       return
     }
 
     const role = await getUserTenantRole(req.userId, req.tenant.id)
 
     if (!role || !allowedRoles.includes(role)) {
-      res.status(403).json({
-        error: 'Droits insuffisants',
-        required: allowedRoles,
-        current: role,
-      })
+      next(new AppError(403, 'forbidden', 'Droits insuffisants.'))
       return
     }
 

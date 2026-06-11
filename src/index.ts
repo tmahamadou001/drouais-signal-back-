@@ -24,6 +24,7 @@ import unreadCommentsRouter from './modules/comments/unread.router.js'
 import uploadRouter from './routes/upload.js'
 import auditRouter from './routes/audit.js'
 import { resolveTenant } from './middleware/tenantResolver.js'
+import { errorHandler } from './middleware/errorHandler.js'
 import compression from 'compression'
 import './cron/weeklyReport.js'
 
@@ -112,10 +113,7 @@ app.get('/api/health', (_req, res) => {
 })
 
 // ─── Error handler ───
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('Erreur non gérée:', err)
-  res.status(500).json({ error: err.message || 'Erreur interne du serveur.' })
-})
+app.use(errorHandler)
 
 // ─── Start ───
 app.listen(PORT, () => {

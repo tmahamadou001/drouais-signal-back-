@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
+import { AppError } from './errorHandler.js'
 
 // Extend Express Request to include user info
 declare global {
@@ -20,7 +21,8 @@ declare global {
 export async function verifyToken(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Token d\'authentification manquant.' })
+    next(new AppError(401, 'unauthorized', 'Token d\'authentification manquant.'))
+    return
   }
 
   const token = authHeader.replace('Bearer ', '')
@@ -29,7 +31,8 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
     const { data, error } = await supabaseAdmin.auth.getUser(token)
 
     if (error || !data.user) {
-      return res.status(401).json({ error: 'Token invalide ou expiré.' })
+      next(new AppError(401, 'unauthorized', 'Token invalide ou expiré.'))
+      return
     }
 
     req.userId = data.user.id
@@ -38,7 +41,7 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
 
     next()
   } catch (err) {
-    return res.status(401).json({ error: 'Erreur de vérification du token.' })
+    next(new AppError(401, 'unauthorized', 'Erreur de vérification du token.'))
   }
 }
 

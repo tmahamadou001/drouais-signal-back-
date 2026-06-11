@@ -1,6 +1,7 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
+import { AppError } from '../middleware/errorHandler.js'
 
 const router: ExpressRouter = Router()
 
@@ -14,7 +15,7 @@ interface MapMarker {
   vote_count: number
 }
 
-router.get('/markers', async (req: Request, res: Response) => {
+router.get('/markers', async (req: Request, res: Response, next: NextFunction) => {
   try {
     let query = supabaseAdmin
       .from('reports')
@@ -29,13 +30,7 @@ router.get('/markers', async (req: Request, res: Response) => {
 
     const { data, error } = await query
 
-    if (error) {
-      console.error('Erreur lors de la récupération des markers:', error)
-      return res.status(500).json({
-        error: 'database_error',
-        message: 'Erreur lors de la récupération des markers.',
-      })
-    }
+    if (error) throw new AppError(500, 'internal_error', 'Erreur lors de la récupération des markers.')
 
     res.setHeader('Cache-Control', 'public, max-age=30')
 
@@ -43,12 +38,8 @@ router.get('/markers', async (req: Request, res: Response) => {
       markers: (data ?? []) as MapMarker[],
       total: (data ?? []).length,
     })
-  } catch (err: any) {
-    console.error('Erreur serveur /api/map/markers:', err)
-    return res.status(500).json({
-      error: 'server_error',
-      message: err.message || 'Erreur serveur.',
-    })
+  } catch (err) {
+    next(err)
   }
 })
 

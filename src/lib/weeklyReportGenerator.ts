@@ -453,11 +453,12 @@ async function sendEmails(emailHtml: string, stats: WeeklyStats): Promise<void> 
       })
       console.log(`[WeeklyReport] ✓ Réponse Resend complète:`, JSON.stringify(result, null, 2))
       console.log(`[WeeklyReport] ✓ Email envoyé à ${recipient.email}, ID:`, result.data?.id)
-    } catch (err: any) {
+    } catch (err) {
+      const e = err as { message?: string; statusCode?: number; name?: string }
       console.error(`[WeeklyReport] ✗ Erreur envoi à ${recipient.email}:`, {
-        message: err.message,
-        statusCode: err.statusCode,
-        name: err.name,
+        message: e.message,
+        statusCode: e.statusCode,
+        name: e.name,
       })
     }
   }

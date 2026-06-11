@@ -1,9 +1,10 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { upload } from '../middleware/upload.js'
 import { verifyToken } from '../middleware/auth.js'
 import { requireTenantAdmin } from '../middleware/roleGuard.js'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import crypto from 'crypto'
+import { badRequest, notFound } from '../middleware/errorHandler.js'
 
 const router: Router = Router()
 
@@ -13,22 +14,14 @@ router.post(
   verifyToken,
   requireTenantAdmin,
   upload.single('photo'),
-  async (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: 'Photo required' })
-      }
-
-      if (!req.tenant) {
-        return res.status(400).json({ error: 'Tenant required' })
-      }
+      if (!req.file)    throw badRequest('Photo requise.')
+      if (!req.tenant)  throw badRequest('Tenant requis.')
 
       const { reportId } = req.body
-      if (!reportId) {
-        return res.status(400).json({ error: 'reportId required' })
-      }
+      if (!reportId) throw badRequest('reportId requis.')
 
-      // Verify report exists and belongs to tenant
       const { data: report, error: reportError } = await supabaseAdmin
         .from('reports')
         .select('id, tenant_id')
@@ -36,11 +29,8 @@ router.post(
         .eq('tenant_id', req.tenant.id)
         .single()
 
-      if (reportError || !report) {
-        return res.status(404).json({ error: 'Signalement introuvable' })
-      }
+      if (reportError || !report) throw notFound('Signalement')
 
-      // Upload photo to Supabase Storage
       const ext = req.file.mimetype.split('/')[1] || 'jpg'
       const fileName = `${crypto.randomUUID()}.${ext}`
       const filePath = `resolutions/${req.tenant.id}/${reportId}/${fileName}`
@@ -52,30 +42,17 @@ router.post(
           upsert: false,
         })
 
-      if (uploadError) {
-        console.error('Upload error:', uploadError)
-        throw uploadError
-      }
+      if (uploadError) throw uploadError
 
-      // Generate signed URL (1 year validity)
       const { data: urlData, error: urlError } = await supabaseAdmin.storage
         .from('photos')
         .createSignedUrl(filePath, 31536000)
 
-      if (urlError) {
-        console.error('URL generation error:', urlError)
-        throw urlError
-      }
+      if (urlError) throw urlError
 
-      res.json({ 
-        url: urlData.signedUrl,
-        filePath 
-      })
-    } catch (err: any) {
-      console.error('Error uploading resolution photo:', err)
-      res.status(500).json({ 
-        error: err.message || 'Error uploading resolution photo' 
-      })
+      res.json({ url: urlData.signedUrl, filePath })
+    } catch (err) {
+      next(err)
     }
   }
 )

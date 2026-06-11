@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import type { Tenant } from '../types/tenant.js'
+import { AppError } from './errorHandler.js'
 
 declare global {
   namespace Express {
@@ -12,6 +13,14 @@ declare global {
 
 // Cache mémoire — TTL 60 secondes
 const tenantCache = new Map<string, { tenant: Tenant; expiresAt: number }>()
+
+// Purge des entrées expirées toutes les 5 minutes pour éviter un memory leak graduel
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, value] of tenantCache.entries()) {
+    if (value.expiresAt <= now) tenantCache.delete(key)
+  }
+}, 5 * 60 * 1000).unref()
 
 async function getTenantBySlug(slug: string): Promise<Tenant | null> {
   const cached = tenantCache.get(slug)
@@ -76,12 +85,12 @@ export async function resolveTenant(
   const tenant = await getTenantBySlug(slug)
 
   if (!tenant) {
-    res.status(404).json({ error: 'Ville introuvable', slug })
+    next(new AppError(404, 'not_found', 'Ville introuvable.'))
     return
   }
 
   if (tenant.status === 'suspended') {
-    res.status(403).json({ error: 'Ce service est suspendu' })
+    next(new AppError(403, 'suspended', 'Ce service est suspendu.'))
     return
   }
 
@@ -91,11 +100,11 @@ export async function resolveTenant(
 
 export function requireTenant(
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): void {
   if (!req.tenant) {
-    res.status(400).json({ error: 'Tenant requis' })
+    next(new AppError(400, 'bad_request', 'Tenant requis.'))
     return
   }
   next()

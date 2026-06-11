@@ -1,16 +1,19 @@
-import { Router, type Request, type Response, type Router as ExpressRouter } from 'express'
+import { Router, type Request, type Response, NextFunction, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
 import { requireTenant, invalidateTenantCache } from '../middleware/tenantResolver.js'
 import { requireTenantAdmin, requireSuperAdmin } from '../middleware/roleGuard.js'
 import { auditUserCreated, auditTenantCreated, auditTenantStatusChanged, createAuditLog } from '../services/auditService.js'
+import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
+import { getAuthEmailMap } from '../lib/authHelpers.js'
+import type { TenantUser, TenantCategory } from '../types/tenant.js'
 
 const router: ExpressRouter = Router()
 
 // ─── GET /api/tenant/my-role ─── Authenticated ──────────
-router.get('/my-role', verifyToken, requireTenant, async (req: Request, res: Response) => {
+router.get('/my-role', verifyToken, requireTenant, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const globalRole: string = (req as any).userRole ?? ''
+    const globalRole: string = req.userRole ?? ''
 
     if (globalRole === 'super_admin') {
       return res.json({ role: 'super_admin', tenantRole: null })
@@ -28,13 +31,13 @@ router.get('/my-role', verifyToken, requireTenant, async (req: Request, res: Res
     }
 
     return res.json({ role: data.role, tenantRole: data.role })
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── GET /api/tenant/config ─── Public ──────────────────
-router.get('/config', requireTenant, async (req: Request, res: Response) => {
+router.get('/config', requireTenant, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const [configResult, categoriesResult] = await Promise.all([
       supabaseAdmin
@@ -50,9 +53,7 @@ router.get('/config', requireTenant, async (req: Request, res: Response) => {
         .order('sort_order'),
     ])
 
-    if (configResult.error) {
-      return res.status(500).json({ error: 'Erreur configuration tenant' })
-    }
+    if (configResult.error) throw new AppError(500, 'internal_error', 'Erreur configuration tenant.')
 
     res.json({
       slug: req.tenant!.slug,
@@ -62,13 +63,13 @@ router.get('/config', requireTenant, async (req: Request, res: Response) => {
       config: configResult.data,
       categories: categoriesResult.data ?? [],
     })
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── GET /api/tenant/categories ─── Public ──────────────
-router.get('/categories', requireTenant, async (req: Request, res: Response) => {
+router.get('/categories', requireTenant, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('tenant_categories')
@@ -76,15 +77,15 @@ router.get('/categories', requireTenant, async (req: Request, res: Response) => 
       .eq('tenant_id', req.tenant!.id)
       .order('sort_order')
 
-    if (error) return res.status(500).json({ error: error.message })
+    if (error) throw error
     res.json(data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── PATCH /api/tenant/config ─── Admin ─────────────────
-router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response) => {
+router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('tenant_configs')
@@ -93,9 +94,8 @@ router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (r
       .select()
       .single()
 
-    if (error) return res.status(500).json({ error: error.message })
+    if (error) throw error
 
-    // Audit log
     createAuditLog({
       userId: req.userId,
       action: 'tenant_config.updated',
@@ -109,23 +109,24 @@ router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (r
     }).catch(err => console.error('[Audit] Erreur:', err))
 
     res.json(data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── PUT /api/tenant/categories ─── Admin ───────────────
-router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response) => {
+router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { categories } = req.body
+    type CategoryInput = { slug: string; label: string; icon?: string; color?: string; description?: string; isActive?: boolean; sortOrder?: number; slaHours?: number }
+    const { categories } = req.body as { categories: CategoryInput[] }
     if (!Array.isArray(categories) || categories.length === 0) {
-      return res.status(400).json({ error: 'categories requis' })
+      throw badRequest('categories requis.')
     }
 
     const { data, error } = await supabaseAdmin
       .from('tenant_categories')
       .upsert(
-        categories.map((cat: any, index: number) => ({
+        categories.map((cat, index) => ({
           tenant_id: req.tenant!.id,
           slug: cat.slug,
           label: cat.label,
@@ -140,9 +141,8 @@ router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async 
       )
       .select()
 
-    if (error) return res.status(500).json({ error: error.message })
+    if (error) throw error
 
-    // Audit log
     createAuditLog({
       userId: req.userId,
       action: 'tenant_categories.updated',
@@ -150,22 +150,22 @@ router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async 
       entityId: req.tenant!.id,
       tenantId: req.tenant!.id,
       tenantSlug: req.tenant!.slug,
-      metadata: { 
+      metadata: {
         categories_count: categories.length,
-        category_slugs: categories.map((c: any) => c.slug)
+        category_slugs: categories.map(c => c.slug),
       },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
     }).catch(err => console.error('[Audit] Erreur:', err))
 
     res.json(data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── GET /api/tenant/users ─── Admin ────────────────────
-router.get('/users', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response) => {
+router.get('/users', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('tenant_users')
@@ -173,34 +173,28 @@ router.get('/users', verifyToken, requireTenant, requireTenantAdmin, async (req:
       .eq('tenant_id', req.tenant!.id)
       .order('created_at')
 
-    if (error) return res.status(500).json({ error: error.message })
+    if (error) throw error
 
-    // Récupérer les emails depuis auth.users
-    const userIds = data.map((u: any) => u.user_id)
-    const { data: authUsers } = await supabaseAdmin.auth.admin.listUsers()
-    const emailMap = new Map(
-      (authUsers?.users ?? []).map((u) => [u.id, u.email])
-    )
+    const userIds = data.map((u: TenantUser) => u.user_id)
+    const emailMap = await getAuthEmailMap(userIds)
 
-    const enriched = data.map((u: any) => ({
+    const enriched = data.map((u: TenantUser) => ({
       ...u,
       email: emailMap.get(u.user_id) ?? null,
     }))
 
     res.json(enriched)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── POST /api/tenant/users/invite ─── Admin ────────────
-router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response) => {
+router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, role, firstName, lastName, jobTitle } = req.body
 
-    if (!email || !role) {
-      return res.status(400).json({ error: 'email et role requis' })
-    }
+    if (!email || !role) throw badRequest('email et role requis.')
 
     let userId: string
 
@@ -214,10 +208,11 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
     if (userError?.message?.includes('already registered')) {
       const { data: existing } = await supabaseAdmin.auth.admin.listUsers()
       const found = existing?.users?.find((u) => u.email === email)
-      if (!found) return res.status(500).json({ error: 'Utilisateur introuvable' })
+      if (!found) throw new AppError(500, 'internal_error', 'Utilisateur introuvable.')
       userId = found.id
     } else if (userError || !userData.user) {
-      return res.status(500).json({ error: userError?.message ?? 'Erreur création utilisateur' })
+      console.error('[Invite] Erreur création utilisateur Supabase:', userError)
+      throw new AppError(500, 'internal_error', 'Erreur lors de la création du compte utilisateur.')
     } else {
       userId = userData.user.id
     }
@@ -238,9 +233,8 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
       .select()
       .single()
 
-    if (error) return res.status(500).json({ error: error.message })
+    if (error) throw error
 
-    // Audit log
     auditUserCreated({
       userId,
       userEmail: email,
@@ -254,23 +248,24 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
     }).catch(err => console.error('[Audit] Erreur:', err))
 
     res.status(201).json(data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── PATCH /api/tenant/users/:userId ─── Admin ──────────
-router.patch('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response) => {
+router.patch('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { userId } = req.params
     const { role, isActive, firstName, lastName, jobTitle } = req.body
 
-    const updates: any = {}
-    if (role !== undefined)      updates.role = role
-    if (isActive !== undefined)  updates.is_active = isActive
+    type UserUpdate = Partial<{ role: string; is_active: boolean; first_name: string; last_name: string; job_title: string }>
+    const updates: UserUpdate = {}
+    if (role      !== undefined) updates.role       = role
+    if (isActive  !== undefined) updates.is_active  = isActive
     if (firstName !== undefined) updates.first_name = firstName
-    if (lastName !== undefined)  updates.last_name = lastName
-    if (jobTitle !== undefined)  updates.job_title = jobTitle
+    if (lastName  !== undefined) updates.last_name  = lastName
+    if (jobTitle  !== undefined) updates.job_title  = jobTitle
 
     const { data, error } = await supabaseAdmin
       .from('tenant_users')
@@ -280,17 +275,39 @@ router.patch('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, a
       .select()
       .single()
 
-    if (error || !data) return res.status(404).json({ error: 'Utilisateur introuvable' })
+    if (error || !data) throw notFound('Utilisateur')
+
+    if (role !== undefined) {
+      createAuditLog({
+        userId: req.userId,
+        action: 'user.role_changed',
+        entityType: 'user',
+        entityId: userId,
+        tenantId: req.tenant!.id,
+        tenantSlug: req.tenant!.slug,
+        metadata: { new_role: role },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      }).catch(err => console.error('[Audit] Erreur:', err))
+    }
+
     res.json(data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── DELETE /api/tenant/users/:userId ─── Admin ─────────
-router.delete('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response) => {
+router.delete('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { userId } = req.params
+
+    const { data: existing } = await supabaseAdmin
+      .from('tenant_users')
+      .select('role')
+      .eq('tenant_id', req.tenant!.id)
+      .eq('user_id', userId)
+      .single()
 
     const { error } = await supabaseAdmin
       .from('tenant_users')
@@ -298,15 +315,28 @@ router.delete('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, 
       .eq('tenant_id', req.tenant!.id)
       .eq('user_id', userId)
 
-    if (error) return res.status(404).json({ error: 'Utilisateur introuvable' })
+    if (error) throw notFound('Utilisateur')
+
+    createAuditLog({
+      userId: req.userId,
+      action: 'user.revoked',
+      entityType: 'user',
+      entityId: userId,
+      tenantId: req.tenant!.id,
+      tenantSlug: req.tenant!.slug,
+      metadata: { revoked_user_role: existing?.role ?? null },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
+
     res.json({ message: 'Accès révoqué' })
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── GET /api/tenant/all ─── Super Admin ────────────────
-router.get('/all', verifyToken, requireSuperAdmin, async (_req: Request, res: Response) => {
+router.get('/all', verifyToken, requireSuperAdmin, async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('tenants')
@@ -318,15 +348,15 @@ router.get('/all', verifyToken, requireSuperAdmin, async (_req: Request, res: Re
       `)
       .order('created_at', { ascending: false })
 
-    if (error) return res.status(500).json({ error: error.message })
+    if (error) throw error
     res.json(data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── POST /api/tenant ─── Super Admin ───────────────────
-router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Response) => {
+router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       slug, name, plan, contactEmail,
@@ -334,7 +364,7 @@ router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Respo
     } = req.body
 
     if (!slug || !name || !cityName) {
-      return res.status(400).json({ error: 'slug, name et cityName requis' })
+      throw badRequest('slug, name et cityName requis.')
     }
 
     const { data: tenant, error: tenantError } = await supabaseAdmin
@@ -351,10 +381,10 @@ router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Respo
       .single()
 
     if (tenantError) {
-      if (tenantError.message?.includes('unique')) {
-        return res.status(409).json({ error: 'Ce slug existe déjà' })
+      if (tenantError.code === '23505') {
+        throw new AppError(409, 'conflict', 'Ce slug existe déjà.')
       }
-      return res.status(500).json({ error: tenantError.message })
+      throw tenantError
     }
 
     await supabaseAdmin.from('tenant_configs').insert({
@@ -365,18 +395,18 @@ router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Respo
       primary_color: primaryColor ?? '#1A56A0',
     })
 
-    const defaultCategories = categories ?? [
-      { slug: 'voirie',   label: 'Voirie',    icon: '🛣️', color: '#EF4444', sort_order: 0, sla_hours: 72 },
-      { slug: 'eclairage',label: 'Éclairage', icon: '💡', color: '#F59E0B', sort_order: 1, sla_hours: 48 },
-      { slug: 'dechets',  label: 'Déchets',   icon: '🗑️', color: '#10B981', sort_order: 2, sla_hours: 48 },
-      { slug: 'autre',    label: 'Autre',     icon: '📌', color: '#6B7280', sort_order: 3, sla_hours: 168 },
+    type DefaultCategory = { slug: string; label: string; icon: string; color: string; sort_order: number; sla_hours: number }
+    const defaultCategories: DefaultCategory[] = categories ?? [
+      { slug: 'voirie',    label: 'Voirie',    icon: '🛣️', color: '#EF4444', sort_order: 0, sla_hours: 72 },
+      { slug: 'eclairage', label: 'Éclairage', icon: '💡', color: '#F59E0B', sort_order: 1, sla_hours: 48 },
+      { slug: 'dechets',   label: 'Déchets',   icon: '🗑️', color: '#10B981', sort_order: 2, sla_hours: 48 },
+      { slug: 'autre',     label: 'Autre',     icon: '📌', color: '#6B7280', sort_order: 3, sla_hours: 168 },
     ]
 
     await supabaseAdmin.from('tenant_categories').insert(
-      defaultCategories.map((cat: any) => ({ ...cat, tenant_id: tenant.id }))
+      defaultCategories.map(cat => ({ ...cat, tenant_id: tenant.id }))
     )
 
-    // Audit log
     auditTenantCreated({
       tenantId: tenant.id,
       tenantSlug: slug,
@@ -387,23 +417,22 @@ router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Respo
     }).catch(err => console.error('[Audit] Erreur:', err))
 
     res.status(201).json(tenant)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── PATCH /api/tenant/:tenantId/status ─── Super Admin ─
-router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Request, res: Response) => {
+router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId } = req.params
     const { status } = req.body
 
     const validStatuses = ['trial', 'active', 'suspended', 'demo']
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({ error: 'Statut invalide' })
+      throw badRequest('Statut invalide.')
     }
 
-    // Récupérer l'ancien statut
     const { data: currentTenant } = await supabaseAdmin
       .from('tenants')
       .select('status, slug')
@@ -421,11 +450,10 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
       .select()
       .single()
 
-    if (error || !data) return res.status(404).json({ error: 'Tenant introuvable' })
+    if (error || !data) throw notFound('Tenant')
 
     invalidateTenantCache(data.slug)
 
-    // Audit log
     if (currentTenant && currentTenant.status !== status) {
       auditTenantStatusChanged({
         tenantId,
@@ -439,8 +467,8 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
     }
 
     res.json(data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  } catch (err) {
+    next(err)
   }
 })
 

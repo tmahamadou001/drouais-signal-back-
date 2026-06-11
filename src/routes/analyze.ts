@@ -1,8 +1,9 @@
-import { Router, Request, Response, type Router as ExpressRouter } from 'express'
+import { Router, Request, Response, NextFunction, type Router as ExpressRouter } from 'express'
 import { analyzePhotoWithGemini, type TenantCategoryForPrompt } from '../lib/gemini.js'
 import { analyzePhotoWithClaude } from '../lib/claude.js'
 import { upload } from '../middleware/upload.js'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
+import { badRequest } from '../middleware/errorHandler.js'
 
 const router: ExpressRouter = Router()
 
@@ -25,44 +26,28 @@ async function getTenantCategories(tenantId?: string): Promise<TenantCategoryFor
 }
 
 // ─── POST /api/analyze-photo — Analyze photo with AI (Claude or Gemini) ───
-router.post('/', upload.single('photo'), async (req: Request, res: Response) => {
+router.post('/', upload.single('photo'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'Photo requise' })
-    }
+    if (!req.file) throw badRequest('Photo requise.')
 
-    // Convertir le buffer en base64
     const base64Image = req.file.buffer.toString('base64')
     const mediaType = req.file.mimetype as 'image/jpeg' | 'image/png' | 'image/webp'
 
-    // Charger les catégories du tenant courant
     const categories = await getTenantCategories(req.tenant?.id)
-    const fallbackSlug = categories[categories.length - 1]?.slug ?? 'autre'
 
-    // Déterminer le provider à utiliser (GEMINI par défaut, CLAUDE si configuré)
     const aiProvider = process.env.AI_PROVIDER || 'GEMINI'
 
-    // ═══════════════════════════════════════════════════════════════
-    // GEMINI PROVIDER
-    // ═══════════════════════════════════════════════════════════════
     if (aiProvider === 'GEMINI') {
-      const result = await analyzePhotoWithGemini(base64Image, mediaType, categories)
-      return res.json(result)
+      return res.json(await analyzePhotoWithGemini(base64Image, mediaType, categories))
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // CLAUDE PROVIDER (Hybrid: Haiku → Sonnet if confidence < 70%)
-    // ═══════════════════════════════════════════════════════════════
     if (aiProvider === 'CLAUDE') {
-      const result = await analyzePhotoWithClaude(base64Image, mediaType, categories)
-      return res.json(result)
+      return res.json(await analyzePhotoWithClaude(base64Image, mediaType, categories))
     }
 
-    // Provider invalide
-    return res.status(400).json({ error: 'AI_PROVIDER invalide. Utilisez GEMINI ou CLAUDE.' })
-  } catch (err: any) {
-    console.error('Erreur analyse photo:', err)
-    res.status(500).json({ error: err.message || 'Erreur serveur' })
+    throw badRequest('AI_PROVIDER invalide. Utilisez GEMINI ou CLAUDE.')
+  } catch (err) {
+    next(err)
   }
 })
 

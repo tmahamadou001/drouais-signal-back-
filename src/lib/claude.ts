@@ -1,6 +1,3 @@
-// Claude AI integration for photo analysis
-// Hybrid model: Haiku by default, escalates to Sonnet if confidence < 70%
-
 import Anthropic from '@anthropic-ai/sdk'
 
 export interface TenantCategoryForPrompt {
@@ -69,28 +66,32 @@ async function analyzeWithModel(
     modelUsed: model,
   }
 
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15_000)
+
   try {
-    const message = await anthropic.messages.create({
-      model,
-      max_tokens: 1024,
-      temperature: 0.5,
-      system: `Tu es un assistant qui analyse des photos de problèmes urbains signalés par des citoyens français.
+    const message = await anthropic.messages.create(
+      {
+        model,
+        max_tokens: 1024,
+        temperature: 0.5,
+        system: `Tu es un assistant qui analyse des photos de problèmes urbains signalés par des citoyens français.
 Tu dois répondre UNIQUEMENT en JSON valide, sans aucun texte avant ou après.`,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: mediaType as any,
-                data: base64Image,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
+                  data: base64Image,
+                },
               },
-            },
-            {
-              type: 'text',
-              text: `Analyse cette photo et retourne ce JSON :
+              {
+                type: 'text',
+                text: `Analyse cette photo et retourne ce JSON :
 {
   "category": ${slugList},
   "title": "titre court en français, max 60 caractères",
@@ -108,11 +109,13 @@ Si l'image n'est pas un problème urbain (photo floue, hors-sujet, inappropriée
   "confidence": "faible",
   "description": "Impossible d'identifier le problème sur la photo"
 }`,
-            },
-          ],
-        },
-      ],
-    })
+              },
+            ],
+          },
+        ],
+      },
+      { signal: controller.signal },
+    )
 
     const textContent = message.content.find((block) => block.type === 'text')
     if (!textContent || textContent.type !== 'text') {
@@ -125,8 +128,6 @@ Si l'image n'est pas un problème urbain (photo floue, hors-sujet, inappropriée
     }
 
     const result = JSON.parse(jsonText)
-
-    console.log('result', result)
 
     // Valider la structure
     if (
@@ -160,8 +161,15 @@ Si l'image n'est pas un problème urbain (photo floue, hors-sujet, inappropriée
       modelUsed: model,
     }
   } catch (err) {
-    console.error(`Erreur analyse ${model}:`, err)
+    const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'))
+    if (isAbort) {
+      console.error(`[Claude] Timeout (15s) dépassé pour le modèle ${model}`)
+    } else {
+      console.error(`[Claude] Erreur analyse ${model}:`, err)
+    }
     return fallback
+  } finally {
+    clearTimeout(timeoutId)
   }
 }
 
@@ -171,7 +179,7 @@ export async function analyzePhotoWithClaude(
   categories: TenantCategoryForPrompt[]
 ): Promise<ClaudeAnalysisResult> {
   if (!process.env.ANTHROPIC_API_KEY) {
-    console.error('ANTHROPIC_API_KEY non configurée')
+    console.error('[Claude] ANTHROPIC_API_KEY non configurée')
     const fallbackSlug = categories[categories.length - 1]?.slug ?? 'autre'
     return {
       category: fallbackSlug,

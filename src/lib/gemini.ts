@@ -1,6 +1,3 @@
-// Gemini AI integration for photo analysis
-// Alternative provider to Claude
-
 export interface TenantCategoryForPrompt {
   slug: string
   label: string
@@ -56,16 +53,22 @@ export async function analyzePhotoWithGemini(
 
   try {
     if (!process.env.GEMINI_API_KEY) {
-      console.error('GEMINI_API_KEY non configurée')
+      console.error('[Gemini] GEMINI_API_KEY non configurée')
       return { ...fallback, error: 'service_unavailable' }
     }
     // `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 15_000)
+
+    let response: globalThis.Response
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        {
+          signal: controller.signal,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
           contents: [
             {
               parts: [
@@ -87,17 +90,30 @@ export async function analyzePhotoWithGemini(
             responseMimeType: "application/json", 
           },
         }),
+        }
+      )
+    } catch (fetchErr) {
+      if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
+        console.error('[Gemini] Timeout (15s) dépassé')
+      } else {
+        console.error('[Gemini] Erreur réseau:', fetchErr)
       }
-    )
+      return fallback
+    } finally {
+      clearTimeout(timeoutId)
+    }
 
     if (!response.ok) {
-      console.error('Gemini API error:', response.status, await response.text())
+      console.error('[Gemini] API error:', response.status, await response.text())
       return fallback
     }
 
-    const data: any = await response.json()
+    interface GeminiApiResponse {
+      candidates?: { content?: { parts?: { text?: string }[] } }[]
+    }
+    const data = await response.json() as GeminiApiResponse
 
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
 
     // Nettoyage agressif
     let cleaned = rawText
@@ -120,15 +136,9 @@ export async function analyzePhotoWithGemini(
     try {
       result = JSON.parse(cleaned)
     } catch (e) {
-      console.error('JSON parse failed, raw:', rawText.substring(0, 100))
+      console.error('[Gemini] JSON parse failed, raw:', rawText.substring(0, 100))
       return fallback
     }
-    // const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
-
-    // // Nettoyer la réponse — Gemini ajoute parfois des backticks
-    // const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim()
-
-    // const result = JSON.parse(cleaned)
 
     // Valider les champs obligatoires
     const validCategories = categories.map((c) => c.slug)
@@ -146,7 +156,7 @@ export async function analyzePhotoWithGemini(
 
     return result
   } catch (err) {
-    console.error('Gemini analysis error:', err)
+    console.error('[Gemini] Erreur analyse:', err)
     return fallback
   }
 }

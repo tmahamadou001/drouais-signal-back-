@@ -1,4 +1,4 @@
-import { Router, Request, Response, type Router as ExpressRouter } from 'express'
+import { Router, Request, Response, NextFunction, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken, verifyTokenOptional } from '../middleware/auth.js'
 import { validateApiKey } from '../middleware/apiKey.js'
@@ -8,12 +8,14 @@ import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
 import { sendStatusChangeNotification } from '../services/notificationService.js'
 import { requireTenantAdmin } from '../middleware/roleGuard.js'
-import { auditReportStatusChanged, auditReportDeleted, auditReportBulkDeleted } from '../services/auditService.js'
+import { auditReportStatusChanged, auditReportDeleted, auditReportBulkDeleted, createAuditLog } from '../services/auditService.js'
+import { createReportLimiter } from '../middleware/rateLimits.js'
+import { AppError, notFound, badRequest, forbidden } from '../middleware/errorHandler.js'
 
 const router: ExpressRouter = Router()
 
 // ─── GET /api/reports — Public list of all reports with pagination ───
-router.get('/', validate(paginationSchema), async (req: Request, res: Response) => {
+router.get('/', validate(paginationSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const page = parseInt(req.query.page as string) || 1
     const limit = parseInt(req.query.limit as string) || 20
@@ -30,7 +32,6 @@ router.get('/', validate(paginationSchema), async (req: Request, res: Response) 
     if (tenantId) dataQuery = dataQuery.eq('tenant_id', tenantId)
 
     const { data, error } = await dataQuery
-
     if (error) throw error
 
     res.json({
@@ -42,13 +43,13 @@ router.get('/', validate(paginationSchema), async (req: Request, res: Response) 
         totalPages: Math.ceil((count || 0) / limit),
       },
     })
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── GET /api/reports/mine — Reports of the logged-in user ───
-router.get('/mine', verifyToken, async (req: Request, res: Response) => {
+router.get('/mine', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
   try {
     let query = supabaseAdmin
       .from('reports')
@@ -59,16 +60,15 @@ router.get('/mine', verifyToken, async (req: Request, res: Response) => {
     if (req.tenant?.id) query = query.eq('tenant_id', req.tenant.id)
 
     const { data, error } = await query
-
     if (error) throw error
     res.json(data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── GET /api/reports/anonymous/:token — Get anonymous report by token ───
-router.get('/anonymous/:token', async (req: Request, res: Response) => {
+router.get('/anonymous/:token', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { token } = req.params
 
@@ -82,18 +82,16 @@ router.get('/anonymous/:token', async (req: Request, res: Response) => {
 
     const reportResult = await reportQuery.single()
 
-    if (reportResult.error) {
-      return res.status(404).json({ error: 'Signalement introuvable.' })
-    }
+    if (reportResult.error) throw notFound('Signalement')
 
     res.json(reportResult.data)
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── GET /api/reports/:id — Single report with history ───
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params
 
@@ -109,72 +107,65 @@ router.get('/:id', async (req: Request, res: Response) => {
         .order('changed_at', { ascending: true }),
     ])
 
-    if (reportResult.error) {
-      return res.status(404).json({ error: 'Signalement introuvable.' })
-    }
+    if (reportResult.error) throw notFound('Signalement')
 
     res.json({
       report: reportResult.data,
       history: historyResult.data || [],
     })
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── POST /api/reports — Create a new report (authenticated or anonymous) ───
-router.post('/',verifyTokenOptional,  validateApiKey, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response) => {
+router.post('/', createReportLimiter, verifyTokenOptional, validateApiKey, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-
     const { title, category, description, lat, lng, address_approx, anonymous_email } = req.body
     const ai_assisted = req.body.ai_assisted === 'true' || req.body.ai_assisted === true
     const isAnonymous = !req.userId
     const anonymousToken = isAnonymous ? crypto.randomBytes(32).toString('hex') : null
 
     if (isAnonymous && !req.apiKeyValid) {
-      return res.status(401).json({ error: 'Clé API invalide ou manquante pour les signalements anonymes.' })
+      throw new AppError(401, 'unauthorized', 'Clé API invalide ou manquante pour les signalements anonymes.')
     }
 
+    if (!req.tenant) throw badRequest('Tenant requis pour créer un signalement.')
+
     // Valider la catégorie contre les catégories actives du tenant
-    if (req.tenant?.id) {
-      const { data: validCategories } = await supabaseAdmin
-        .from('tenant_categories')
-        .select('slug')
-        .eq('tenant_id', req.tenant.id)
-        .eq('is_active', true)
-      if (validCategories && validCategories.length > 0) {
-        const validSlugs = validCategories.map((c: any) => c.slug)
-        if (!validSlugs.includes(category)) {
-          return res.status(400).json({ error: `Catégorie invalide : "${category}"` })
-        }
+    const { data: validCategories } = await supabaseAdmin
+      .from('tenant_categories')
+      .select('slug')
+      .eq('tenant_id', req.tenant.id)
+      .eq('is_active', true)
+    if (validCategories && validCategories.length > 0) {
+      const validSlugs = validCategories.map(c => c.slug)
+      if (!validSlugs.includes(category)) {
+        throw badRequest(`Catégorie invalide : "${category}"`)
       }
     }
 
     // Valider que les coordonnées sont dans le périmètre du tenant
-    if (req.tenant?.id) {
-      const { data: tenantConfig } = await supabaseAdmin
-        .from('tenant_configs')
-        .select('map_lat, map_lng, map_radius_km')
-        .eq('tenant_id', req.tenant.id)
-        .single()
+    const { data: tenantConfig } = await supabaseAdmin
+      .from('tenant_configs')
+      .select('map_lat, map_lng, map_radius_km')
+      .eq('tenant_id', req.tenant.id)
+      .single()
 
-      if (tenantConfig?.map_lat && tenantConfig?.map_lng) {
-        const reportLat = parseFloat(lat)
-        const reportLng = parseFloat(lng)
-        const radiusKm = tenantConfig.map_radius_km ?? 15
+    if (tenantConfig?.map_lat && tenantConfig?.map_lng) {
+      const reportLat = parseFloat(lat)
+      const reportLng = parseFloat(lng)
+      const radiusKm = tenantConfig.map_radius_km ?? 15
 
-        const R = 6371
-        const dLat = (reportLat - tenantConfig.map_lat) * Math.PI / 180
-        const dLng = (reportLng - tenantConfig.map_lng) * Math.PI / 180
-        const a = Math.sin(dLat / 2) ** 2
-          + Math.cos(tenantConfig.map_lat * Math.PI / 180) * Math.cos(reportLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
-        const distanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+      const R = 6371
+      const dLat = (reportLat - tenantConfig.map_lat) * Math.PI / 180
+      const dLng = (reportLng - tenantConfig.map_lng) * Math.PI / 180
+      const a = Math.sin(dLat / 2) ** 2
+        + Math.cos(tenantConfig.map_lat * Math.PI / 180) * Math.cos(reportLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+      const distanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 
-        if (distanceKm > radiusKm) {
-          return res.status(422).json({
-            error: `La position est en dehors de la zone autorisée (rayon : ${radiusKm} km).`,
-          })
-        }
+      if (distanceKm > radiusKm) {
+        throw new AppError(422, 'out_of_bounds', `La position est en dehors de la zone autorisée (rayon : ${radiusKm} km).`)
       }
     }
 
@@ -203,11 +194,6 @@ router.post('/',verifyTokenOptional,  validateApiKey, upload.single('photo'), va
       photo_url = urlData.signedUrl
     }
 
-    if (!req.tenant) {
-      return res.status(400).json({ error: 'Tenant requis pour créer un signalement.' })
-    }
-
-    // Insert report
     const { data, error } = await supabaseAdmin
       .from('reports')
       .insert({
@@ -231,29 +217,43 @@ router.post('/',verifyTokenOptional,  validateApiKey, upload.single('photo'), va
 
     if (error) throw error
 
-    // Insert initial status history entry
-    await supabaseAdmin.from('status_history').insert({
-      report_id: data.id,
-      old_status: 'en_attente',
-      new_status: 'en_attente',
-      changed_at: new Date().toISOString(),
-      tenant_id: req.tenant.id,
+    // Historique initial — RPC garantit l'atomicité même si la connexion coupe après l'insert report
+    await supabaseAdmin.rpc('insert_initial_status_history', {
+      p_report_id: data.id,
+      p_tenant_id: req.tenant.id,
     })
 
-    const response: any = { id: data.id }
+    createAuditLog({
+      userId: req.userId ?? undefined,
+      action: 'report.created',
+      entityType: 'report',
+      entityId: data.id,
+      tenantId: req.tenant!.id,
+      tenantSlug: req.tenant!.slug,
+      metadata: {
+        category,
+        is_anonymous: isAnonymous,
+        ai_assisted,
+        has_photo: !!photo_url,
+        via_api_key: !!req.apiKeyValid,
+      },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch(err => console.error('[Audit] Erreur:', err))
+
+    const response: { id: string; anonymous_token?: string } = { id: data.id }
     if (isAnonymous) {
       response.anonymous_token = data.anonymous_token
-      console.log(`📝 [Anonymous Report] Token: ${anonymousToken?.substring(0, 8)}... | Email: ${anonymous_email || 'none'}`)
+      console.log(`[Anonymous Report] Token: ${anonymousToken?.substring(0, 8)}... | Email: ${anonymous_email || 'none'}`)
     }
     res.status(201).json(response)
-  } catch (err: any) {
-    console.error('Erreur création signalement:', err)
-    res.status(500).json({ error: 'Erreur lors de la création du signalement.' })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── PATCH /api/reports/:id/status — Admin: update report status ───
-router.patch('/:id/status', verifyToken, requireTenantAdmin,validate(updateReportSchema), async (req: Request, res: Response) => {
+router.patch('/:id/status', verifyToken, requireTenantAdmin, validate(updateReportSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params
     const { status, comment } = req.body
@@ -264,37 +264,27 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin,validate(updateRepor
       .eq('id', id)
       .single()
 
-    if (fetchError || !currentReport) {
-      return res.status(404).json({ error: 'Signalement introuvable.' })
-    }
+    if (fetchError || !currentReport) throw notFound('Signalement')
 
     const oldStatus = currentReport.status
+    const tenantId = req.tenant?.id ?? currentReport.tenant_id
 
-    const { data: updatedReport, error: updateError } = await supabaseAdmin
-      .from('reports')
-      .update({
-        status,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select()
-      .single()
+    const { data: rows, error: rpcError } = await supabaseAdmin.rpc(
+      'update_report_status_atomic',
+      {
+        p_report_id:  id,
+        p_new_status: status,
+        p_agent_id:   req.userId,
+        p_tenant_id:  tenantId,
+        p_comment:    comment ?? null,
+      }
+    )
 
-    if (updateError) throw updateError
+    if (rpcError) throw rpcError
 
-    await supabaseAdmin.from('status_history').insert({
-      report_id: id,
-      old_status: oldStatus,
-      new_status: status,
-      agent_id: req.userId,
-      changed_at: new Date().toISOString(),
-      comment: comment || null,
-      tenant_id: req.tenant?.id ?? currentReport.tenant_id,
-    })
-
+    const updatedReport = Array.isArray(rows) ? rows[0] : rows
     res.json({ data: updatedReport })
 
-    // Audit log
     auditReportStatusChanged({
       reportId: id,
       reportTitle: currentReport.title,
@@ -323,15 +313,13 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin,validate(updateRepor
     }).catch(err => {
       console.error('[Notification] Erreur background:', err)
     })
-
-  } catch (err: any) {
-    console.error('Erreur mise à jour statut:', err)
-    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── DELETE /api/reports/:id — Admin: delete a report ───
-router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res: Response) => {
+router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params
 
@@ -341,12 +329,10 @@ router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res:
       .eq('id', id)
       .single()
 
-    if (fetchError || !currentReport) {
-      return res.status(404).json({ error: 'Signalement introuvable.' })
-    }
+    if (fetchError || !currentReport) throw notFound('Signalement')
 
     if (req.tenant?.id && currentReport.tenant_id !== req.tenant.id) {
-      return res.status(403).json({ error: 'Vous ne pouvez supprimer que les signalements de votre tenant.' })
+      throw forbidden('Vous ne pouvez supprimer que les signalements de votre tenant.')
     }
 
     if (currentReport.photo_url) {
@@ -371,7 +357,6 @@ router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res:
 
     if (deleteError) throw deleteError
 
-    // Audit log
     auditReportDeleted({
       reportId: id,
       reportTitle: currentReport.title,
@@ -383,19 +368,18 @@ router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res:
     }).catch(err => console.error('[Audit] Erreur:', err))
 
     res.json({ success: true, message: 'Signalement supprimé avec succès.' })
-  } catch (err: any) {
-    console.error('Erreur suppression signalement:', err)
-    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  } catch (err) {
+    next(err)
   }
 })
 
 // ─── DELETE /api/reports/bulk — Admin: delete multiple reports ───
-router.delete('/', verifyToken, requireTenantAdmin, async (req: Request, res: Response) => {
+router.delete('/', verifyToken, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { ids } = req.body
 
     if (!Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({ error: 'Liste d\'IDs requise.' })
+      throw badRequest('Liste d\'IDs requise.')
     }
 
     const { data: reports, error: fetchError } = await supabaseAdmin
@@ -406,15 +390,12 @@ router.delete('/', verifyToken, requireTenantAdmin, async (req: Request, res: Re
     if (fetchError) throw fetchError
 
     if (!reports || reports.length === 0) {
-      return res.status(404).json({ error: 'Aucun signalement trouvé.' })
+      throw notFound('Signalements')
     }
 
     const invalidReports = reports.filter(r => r.tenant_id !== req.tenant?.id)
     if (invalidReports.length > 0) {
-      return res.status(403).json({ 
-        error: 'Vous ne pouvez supprimer que les signalements de votre tenant.',
-        invalidIds: invalidReports.map(r => r.id)
-      })
+      throw forbidden('Vous ne pouvez supprimer que les signalements de votre tenant.')
     }
 
     for (const report of reports) {
@@ -441,7 +422,6 @@ router.delete('/', verifyToken, requireTenantAdmin, async (req: Request, res: Re
 
     if (deleteError) throw deleteError
 
-    // Audit log
     auditReportBulkDeleted({
       reportIds: ids,
       deletedBy: req.userId!,
@@ -451,14 +431,13 @@ router.delete('/', verifyToken, requireTenantAdmin, async (req: Request, res: Re
       userAgent: req.get('user-agent'),
     }).catch(err => console.error('[Audit] Erreur:', err))
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: `${reports.length} signalement(s) supprimé(s) avec succès.`,
-      deletedCount: reports.length
+      deletedCount: reports.length,
     })
-  } catch (err: any) {
-    console.error('Erreur suppression multiple:', err)
-    res.status(500).json({ error: err.message || 'Erreur serveur.' })
+  } catch (err) {
+    next(err)
   }
 })
 

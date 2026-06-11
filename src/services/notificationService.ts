@@ -1,13 +1,9 @@
 import { Resend } from 'resend'
-import { createClient } from '@supabase/supabase-js'
+import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { buildStatusEmail } from '../templates/statusNotification.js'
+import { getAuthUserEmail } from '../lib/authHelpers.js'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
-
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
 
 interface StatusChangeParams {
   reportId: string
@@ -26,7 +22,7 @@ interface StatusChangeParams {
 export async function sendStatusChangeNotification(
   params: StatusChangeParams
 ): Promise<void> {
-  
+
   if (params.newStatus === params.previousStatus) {
     console.log(`[Notification] Statut inchangé pour ${params.reportId} — notification ignorée`)
     return
@@ -38,28 +34,23 @@ export async function sendStatusChangeNotification(
   }
 
   let recipientEmail: string | null = null
-  let recipientName: string = 'Citoyen'
 
   if (params.userId) {
-    try {
-      const { data: userData, error } =
-        await supabaseAdmin.auth.admin.getUserById(params.userId)
+    recipientEmail = await getAuthUserEmail(params.userId)
+  }
 
-      if (!error && userData.user?.email) {
-        recipientEmail = userData.user.email
-        recipientName =
-          userData.user.user_metadata?.name ||
-          userData.user.email.split('@')[0]
-      }
-    } catch (err) {
-      console.error('[Notification] Erreur récupération user:', err)
-    }
+  if (!params.userId && params.isAnonymous) {
+    // Pour les signalements anonymes, l'email est éventuellement stocké dans reports.anonymous_email
+    const { data } = await supabaseAdmin
+      .from('reports')
+      .select('anonymous_email')
+      .eq('id', params.reportId)
+      .single()
+    recipientEmail = data?.anonymous_email ?? null
   }
 
   if (!recipientEmail) {
-    console.log(
-      `[Notification] Pas d'email pour le signalement ${params.reportId} — notification ignorée` 
-    )
+    console.log(`[Notification] Pas d'email pour le signalement ${params.reportId} — notification ignorée`)
     return
   }
 
@@ -76,16 +67,16 @@ export async function sendStatusChangeNotification(
     anonymousToken: params.anonymousToken,
   })
 
-  const subjects = {
+  const subjects: Record<StatusChangeParams['newStatus'], string> = {
     pris_en_charge: `Votre signalement "${params.reportTitle.substring(0, 40)}" est pris en charge`,
-    resolu: `Votre signalement "${params.reportTitle.substring(0, 40)}" a été résolu`,
-    en_attente: `Mise à jour de votre signalement`,
+    resolu:         `Votre signalement "${params.reportTitle.substring(0, 40)}" a été résolu`,
+    en_attente:     `Mise à jour de votre signalement`,
   }
 
-  const textVersions = {
+  const textVersions: Record<StatusChangeParams['newStatus'], string> = {
     pris_en_charge: `Bonjour,\n\nBonne nouvelle ! Votre signalement "${params.reportTitle}" a été pris en charge par les services municipaux.\n\nIls vont intervenir prochainement pour résoudre ce problème.\n\nVous pouvez suivre l'évolution de votre signalement sur OnSignale.\n\nCordialement,\nL'équipe OnSignale`,
-    resolu: `Bonjour,\n\nVotre signalement "${params.reportTitle}" a été résolu par les services municipaux.\n\nMerci pour votre contribution à l'amélioration de votre ville !\n\nVous pouvez consulter les détails de la résolution sur OnSignale.\n\nCordialement,\nL'équipe OnSignale`,
-    en_attente: `Bonjour,\n\nVotre signalement "${params.reportTitle}" est en attente de traitement.\n\nNous vous tiendrons informé de son évolution.\n\nCordialement,\nL'équipe OnSignale`,
+    resolu:         `Bonjour,\n\nVotre signalement "${params.reportTitle}" a été résolu par les services municipaux.\n\nMerci pour votre contribution à l'amélioration de votre ville !\n\nVous pouvez consulter les détails de la résolution sur OnSignale.\n\nCordialement,\nL'équipe OnSignale`,
+    en_attente:     `Bonjour,\n\nVotre signalement "${params.reportTitle}" est en attente de traitement.\n\nNous vous tiendrons informé de son évolution.\n\nCordialement,\nL'équipe OnSignale`,
   }
 
   try {
@@ -101,7 +92,7 @@ export async function sendStatusChangeNotification(
         'X-Priority': '3',
       },
       tags: [
-        { name: 'type', value: 'status_notification' },
+        { name: 'type',   value: 'status_notification' },
         { name: 'status', value: params.newStatus },
       ],
     })
@@ -109,10 +100,7 @@ export async function sendStatusChangeNotification(
     if (error) {
       console.error('[Notification] Erreur Resend:', error)
     } else {
-      console.log(
-        `[Notification] Email envoyé à ${recipientEmail} — ` +
-        `signalement ${params.reportId} → ${params.newStatus}` 
-      )
+      console.log(`[Notification] Email envoyé → ${params.reportId} (${params.newStatus})`)
     }
   } catch (err) {
     console.error('[Notification] Exception Resend:', err)

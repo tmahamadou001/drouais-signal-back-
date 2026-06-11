@@ -1,7 +1,8 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
+import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
 
 const router: ExpressRouter = Router()
 
@@ -13,17 +14,14 @@ function getClientIp(req: Request): string {
   return req.socket.remoteAddress || 'unknown'
 }
 
-router.post('/:id/vote', async (req: Request, res: Response) => {
+router.post('/:id/vote', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const reportId = req.params.id
-    const userId = (req as any).userId || null
+    const userId = req.userId || null
     const anonymousIp = userId ? null : getClientIp(req)
 
     if (!userId && !anonymousIp) {
-      return res.status(400).json({
-        error: 'no_identifier',
-        message: 'Impossible d\'identifier l\'utilisateur.',
-      })
+      throw badRequest('Impossible d\'identifier l\'utilisateur.')
     }
 
     const { data: report, error: reportError } = await supabaseAdmin
@@ -32,21 +30,19 @@ router.post('/:id/vote', async (req: Request, res: Response) => {
       .eq('id', reportId)
       .single()
 
-    if (reportError || !report) {
-      return res.status(404).json({
-        error: 'report_not_found',
-        message: 'Signalement introuvable.',
-      })
-    }
+    if (reportError || !report) throw notFound('Signalement')
 
     if (report.status === 'resolu') {
-      return res.status(400).json({
-        error: 'report_resolved',
-        message: 'Impossible de voter pour un signalement résolu.',
-      })
+      throw badRequest('Impossible de voter pour un signalement résolu.')
     }
 
-    const voteData: any = {
+    interface VoteInsert {
+      report_id: string
+      user_id: string | null
+      anonymous_ip: string | null
+      tenant_id: string | null
+    }
+    const voteData: VoteInsert = {
       report_id: reportId,
       user_id: userId,
       anonymous_ip: anonymousIp,
@@ -59,47 +55,34 @@ router.post('/:id/vote', async (req: Request, res: Response) => {
 
     if (insertError) {
       if (insertError.code === '23505') {
-        return res.status(409).json({
-          error: 'already_voted',
-          message: 'Vous avez déjà voté pour ce signalement.',
-        })
+        throw new AppError(409, 'already_voted', 'Vous avez déjà voté pour ce signalement.')
       }
-      console.error('Erreur insertion vote:', insertError)
-      return res.status(500).json({
-        error: 'database_error',
-        message: 'Erreur lors de l\'enregistrement du vote.',
-      })
+      throw insertError
     }
 
-    const { data: updatedReport } = await supabaseAdmin
+    // Le trigger update_vote_count() maintient report.vote_count automatiquement
+    return res.json({ vote_count: report.vote_count + 1 })
+  } catch (err) {
+    next(err)
+  }
+})
+
+router.delete('/:id/vote', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const reportId = req.params.id
+    const userId = req.userId
+
+    if (!userId) {
+      throw new AppError(401, 'unauthorized', 'Vous devez être connecté pour retirer votre vote.')
+    }
+
+    const { data: currentReport, error: fetchError } = await supabaseAdmin
       .from('reports')
       .select('vote_count')
       .eq('id', reportId)
       .single()
 
-    return res.json({
-      vote_count: updatedReport?.vote_count || report.vote_count + 1,
-    })
-  } catch (err: any) {
-    console.error('Erreur serveur vote:', err)
-    return res.status(500).json({
-      error: 'server_error',
-      message: err.message || 'Erreur serveur.',
-    })
-  }
-})
-
-router.delete('/:id/vote', verifyToken, async (req: Request, res: Response) => {
-  try {
-    const reportId = req.params.id
-    const userId = (req as any).userId
-
-    if (!userId) {
-      return res.status(401).json({
-        error: 'unauthorized',
-        message: 'Vous devez être connecté pour retirer votre vote.',
-      })
-    }
+    if (fetchError || !currentReport) throw notFound('Signalement')
 
     const { error: deleteError } = await supabaseAdmin
       .from('votes')
@@ -107,36 +90,21 @@ router.delete('/:id/vote', verifyToken, async (req: Request, res: Response) => {
       .eq('report_id', reportId)
       .eq('user_id', userId)
 
-    if (deleteError) {
-      console.error('Erreur suppression vote:', deleteError)
-      return res.status(500).json({
-        error: 'database_error',
-        message: 'Erreur lors de la suppression du vote.',
-      })
-    }
+    if (deleteError) throw deleteError
 
-    const { data: updatedReport } = await supabaseAdmin
-      .from('reports')
-      .select('vote_count')
-      .eq('id', reportId)
-      .single()
-
+    // Le trigger update_vote_count() maintient report.vote_count automatiquement
     return res.json({
-      vote_count: updatedReport?.vote_count || 0,
+      vote_count: Math.max((currentReport.vote_count ?? 1) - 1, 0),
     })
-  } catch (err: any) {
-    console.error('Erreur serveur delete vote:', err)
-    return res.status(500).json({
-      error: 'server_error',
-      message: err.message || 'Erreur serveur.',
-    })
+  } catch (err) {
+    next(err)
   }
 })
 
-router.get('/:id/my-vote', async (req: Request, res: Response) => {
+router.get('/:id/my-vote', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const reportId = req.params.id
-    const userId = (req as any).userId || null
+    const userId = req.userId || null
     const anonymousIp = userId ? null : getClientIp(req)
 
     let hasVoted = false
@@ -162,12 +130,8 @@ router.get('/:id/my-vote', async (req: Request, res: Response) => {
     }
 
     return res.json({ has_voted: hasVoted })
-  } catch (err: any) {
-    console.error('Erreur serveur my-vote:', err)
-    return res.status(500).json({
-      error: 'server_error',
-      message: err.message || 'Erreur serveur.',
-    })
+  } catch (err) {
+    next(err)
   }
 })
 

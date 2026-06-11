@@ -1,72 +1,69 @@
-import type { Request, Response } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
 import { sendCommentNotification } from './comments.email.js'
+import { AppError, notFound, forbidden } from '../../middleware/errorHandler.js'
+import { getAuthUserEmail } from '../../lib/authHelpers.js'
 
 // ─── Lister les commentaires d'un signalement ────────────────────
 export async function getComments(
   req: Request,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
-  if (!req.tenant) {
-    res.status(404).json({ error: 'Tenant introuvable' })
-    return
-  }
+  try {
+    if (!req.tenant) throw notFound('Tenant')
 
-  const { reportId } = req.params
+    const { reportId } = req.params
 
-  // Vérifier que le signalement appartient au tenant
-  const { data: report } = await supabaseAdmin
-    .from('reports')
-    .select('id, user_id, status')
-    .eq('id', reportId)
-    .eq('tenant_id', req.tenant.id)
-    .single()
+    const { data: report } = await supabaseAdmin
+      .from('reports')
+      .select('id, user_id, status')
+      .eq('id', reportId)
+      .eq('tenant_id', req.tenant.id)
+      .single()
 
-  if (!report) {
-    res.status(404).json({ error: 'Signalement introuvable' })
-    return
-  }
+    if (!report) throw notFound('Signalement')
 
-  // Vérifier les droits d'accès du citoyen
-  const userRole = req.userRole
-  const isCitizen =
-    userRole === 'citizen' ||
-    (!userRole && req.userId)
+    const userRole = req.userRole
+    const isCitizen = userRole === 'citizen' || (!userRole && req.userId)
 
-  if (isCitizen && report.user_id !== req.userId) {
-    res.status(403).json({
-      error: 'Accès non autorisé',
-    })
-    return
-  }
+    if (isCitizen && report.user_id !== req.userId) {
+      throw forbidden('Accès non autorisé.')
+    }
 
-  // Récupérer les commentaires (messages agents + leurs réponses citoyens)
-  const { data: comments, error } =
-    await supabaseAdmin
+    const { data: comments, error } = await supabaseAdmin
       .from('report_comments')
       .select('*')
       .eq('report_id', reportId)
       .eq('tenant_id', req.tenant.id)
       .order('created_at', { ascending: true })
 
-  if (error) {
-    console.error('Error fetching comments:', error)
-    res.status(500).json({ error: 'Erreur serveur' })
-    return
-  }
+    if (error) throw error
 
-  // Enrichir les commentaires avec les infos des agents
-  const enrichedComments = await Promise.all(
-    (comments ?? []).map(async (comment) => {
+    // Enrichir les commentaires avec les infos des agents — une seule requête batch
+    const agentIds = [...new Set(
+      (comments ?? [])
+        .filter(c => c.author_type === 'agent')
+        .map(c => c.author_id)
+    )]
+
+    const agentMap = new Map<string, { first_name: string | null; last_name: string | null }>()
+
+    if (agentIds.length > 0) {
+      const { data: agents } = await supabaseAdmin
+        .from('tenant_users')
+        .select('user_id, first_name, last_name, job_title')
+        .in('user_id', agentIds)
+        .eq('tenant_id', req.tenant!.id)
+
+      for (const agent of agents ?? []) {
+        agentMap.set(agent.user_id, agent)
+      }
+    }
+
+    const enrichedComments = (comments ?? []).map(comment => {
       if (comment.author_type === 'agent') {
-        // Récupérer les infos de l'agent depuis tenant_users
-        const { data: agentInfo } = await supabaseAdmin
-          .from('tenant_users')
-          .select('first_name, last_name, job_title')
-          .eq('user_id', comment.author_id)
-          .eq('tenant_id', req.tenant!.id)
-          .single()
-        
+        const agentInfo = agentMap.get(comment.author_id)
         return {
           ...comment,
           author: agentInfo ? {
@@ -79,90 +76,73 @@ export async function getComments(
       }
       return comment
     })
-  )
 
-  // Marquer comme lu selon le type d'utilisateur
-  if (isCitizen && req.userId) {
-    await supabaseAdmin
-      .from('report_comments')
-      .update({ read_by_citizen: true })
-      .eq('report_id', reportId)
-      .eq('author_type', 'agent')
-      .eq('read_by_citizen', false)
-  } else if (!isCitizen) {
-    await supabaseAdmin
-      .from('report_comments')
-      .update({ read_by_agent: true })
-      .eq('report_id', reportId)
-      .eq('author_type', 'citizen')
-      .eq('read_by_agent', false)
+    if (isCitizen && req.userId) {
+      await supabaseAdmin
+        .from('report_comments')
+        .update({ read_by_citizen: true })
+        .eq('report_id', reportId)
+        .eq('author_type', 'agent')
+        .eq('read_by_citizen', false)
+    } else if (!isCitizen) {
+      await supabaseAdmin
+        .from('report_comments')
+        .update({ read_by_agent: true })
+        .eq('report_id', reportId)
+        .eq('author_type', 'citizen')
+        .eq('read_by_agent', false)
+    }
+
+    const agentMessages = enrichedComments
+      .filter(c => c.parent_id === null)
+      .map(c => ({
+        ...c,
+        replies: enrichedComments.filter(r => r.parent_id === c.id),
+      }))
+
+    res.json(agentMessages)
+  } catch (err) {
+    next(err)
   }
-
-  // Structurer : messages agents + réponses imbriquées
-  const agentMessages = enrichedComments
-    .filter(c => c.parent_id === null)
-    .map(c => ({
-      ...c,
-      replies: enrichedComments
-        .filter(r => r.parent_id === c.id),
-    }))
-
-  res.json(agentMessages)
 }
 
 // ─── Agent poste un message ───────────────────────────────────────
 export async function createAgentComment(
   req: Request,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
-  if (!req.tenant || !req.userId) {
-    res.status(404).json({ error: 'Tenant introuvable' })
-    return
-  }
+  try {
+    if (!req.tenant || !req.userId) throw notFound('Tenant')
 
-  const { reportId } = req.params
-  const { content, photoUrl, isResolutionPhoto } =
-    req.body
+    const { reportId } = req.params
+    const { content, photoUrl, isResolutionPhoto } = req.body
 
-  // Récupérer le signalement
-  const { data: report, error: reportError } = await supabaseAdmin
-    .from('reports')
-    .select('id, status, title, user_id')
-    .eq('id', reportId)
-    .eq('tenant_id', req.tenant.id)
-    .single()
+    const { data: report, error: reportError } = await supabaseAdmin
+      .from('reports')
+      .select('id, status, title, user_id')
+      .eq('id', reportId)
+      .eq('tenant_id', req.tenant.id)
+      .single()
 
-  if (reportError || !report) {
-    console.error('Error fetching report:', reportError)
-    res.status(404).json({ error: 'Signalement introuvable' })
-    return
-  }
+    if (reportError || !report) throw notFound('Signalement')
 
-  // Récupérer l'email du citoyen depuis auth.users
-  let citizenEmail: string | null = null
-  if (report.user_id) {
-    const { data: userData } = await supabaseAdmin.auth.admin.getUserById(report.user_id)
-    citizenEmail = userData?.user?.email ?? null
-  }
+    const citizenEmail = report.user_id
+      ? await getAuthUserEmail(report.user_id)
+      : null
 
-  // Récupérer le nom de l'agent
-  const { data: agentProfile } =
-    await supabaseAdmin
+    const { data: agentProfile } = await supabaseAdmin
       .from('tenant_users')
       .select('first_name, last_name, job_title')
       .eq('user_id', req.userId!)
       .eq('tenant_id', req.tenant.id)
       .single()
 
-  const agentName = agentProfile
-    ? [agentProfile.first_name, agentProfile.last_name]
-        .filter(Boolean).join(' ') ||
-        'Agent municipal'
-    : 'Agent municipal'
+    const agentName = agentProfile
+      ? [agentProfile.first_name, agentProfile.last_name].filter(Boolean).join(' ') || 'Agent municipal'
+      : 'Agent municipal'
 
-  // Créer le commentaire
-  const { data: comment, error } =
-    await supabaseAdmin
+    const { data: comment, error } = await supabaseAdmin
       .from('report_comments')
       .insert({
         report_id: reportId,
@@ -171,8 +151,7 @@ export async function createAgentComment(
         author_id: req.userId!,
         content: content.trim(),
         photo_url: photoUrl ?? null,
-        is_resolution_photo:
-          isResolutionPhoto ?? false,
+        is_resolution_photo: isResolutionPhoto ?? false,
         parent_id: null,
         report_status_at_time: report.status,
         read_by_citizen: false,
@@ -181,93 +160,69 @@ export async function createAgentComment(
       .select()
       .single()
 
-  if (error || !comment) {
-    console.error('Error creating comment:', error)
-    res.status(500).json({ error: 'Erreur serveur' })
-    return
-  }
+    if (error || !comment) throw error ?? new AppError(500, 'internal_error', 'Erreur création commentaire.')
 
-  // Notifier le citoyen par email si il existe et a un email
-  if (citizenEmail) {
-    await sendCommentNotification({
-      to: citizenEmail,
-      reportTitle: report.title,
-      agentName,
-      agentJobTitle: agentProfile?.job_title,
-      message: content,
-      tenantName: req.tenant.name,
-      reportId,
-      hasPhoto: !!photoUrl,
-    }).catch(err => {
-      // Ne pas bloquer si l'email échoue
-      console.error('Email notification error:', err)
-    })
-  }
+    if (citizenEmail) {
+      await sendCommentNotification({
+        to: citizenEmail,
+        reportTitle: report.title,
+        agentName,
+        agentJobTitle: agentProfile?.job_title,
+        message: content,
+        tenantName: req.tenant.name,
+        reportId,
+        hasPhoto: !!photoUrl,
+      }).catch(err => {
+        console.error('Email notification error:', err)
+      })
+    }
 
-  res.status(201).json(comment)
+    res.status(201).json(comment)
+  } catch (err) {
+    next(err)
+  }
 }
 
 // ─── Citoyen répond à un message d'agent ─────────────────────────
 export async function createCitizenComment(
   req: Request,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
-  if (!req.tenant || !req.userId) {
-    res.status(404).json({ error: 'Tenant introuvable' })
-    return
-  }
+  try {
+    if (!req.tenant || !req.userId) throw notFound('Tenant')
 
-  const { reportId } = req.params
-  const { content, parentId } = req.body
+    const { reportId } = req.params
+    const { content, parentId } = req.body
 
-  // Vérifier que le signalement appartient au citoyen connecté
-  const { data: report } = await supabaseAdmin
-    .from('reports')
-    .select('id, status, title, user_id')
-    .eq('id', reportId)
-    .eq('tenant_id', req.tenant.id)
-    .eq('user_id', req.userId!)
-    .single()
+    const { data: report } = await supabaseAdmin
+      .from('reports')
+      .select('id, status, title, user_id')
+      .eq('id', reportId)
+      .eq('tenant_id', req.tenant.id)
+      .eq('user_id', req.userId!)
+      .single()
 
-  if (!report) {
-    res.status(403).json({
-      error: 'Ce signalement ne vous appartient pas',
-    })
-    return
-  }
+    if (!report) throw forbidden('Ce signalement ne vous appartient pas.')
 
-  // Vérifier que le parent existe et est un message d'agent
-  const { data: parent } = await supabaseAdmin
-    .from('report_comments')
-    .select('id, author_type, parent_id')
-    .eq('id', parentId)
-    .eq('report_id', reportId)
-    .single()
+    const { data: parent } = await supabaseAdmin
+      .from('report_comments')
+      .select('id, author_type, parent_id')
+      .eq('id', parentId)
+      .eq('report_id', reportId)
+      .single()
 
-  if (!parent) {
-    res.status(404).json({
-      error: 'Message introuvable',
-    })
-    return
-  }
+    if (!parent) throw notFound('Message')
 
-  if (parent.author_type !== 'agent') {
-    res.status(422).json({
-      error: 'Vous ne pouvez répondre qu\'aux messages des agents',
-    })
-    return
-  }
+    if (parent.author_type !== 'agent') {
+      throw new AppError(422, 'unprocessable', 'Vous ne pouvez répondre qu\'aux messages des agents.')
+    }
 
-  if (parent.parent_id !== null) {
-    res.status(422).json({
-      error: 'Réponse imbriquée non autorisée',
-    })
-    return
-  }
+    if (parent.parent_id !== null) {
+      throw new AppError(422, 'unprocessable', 'Réponse imbriquée non autorisée.')
+    }
 
-  // Vérifier que le citoyen n'a pas déjà répondu à ce message
-  const { data: existingReply } =
-    await supabaseAdmin
+    const { data: existingReply } = await supabaseAdmin
       .from('report_comments')
       .select('id')
       .eq('parent_id', parentId)
@@ -275,16 +230,11 @@ export async function createCitizenComment(
       .eq('author_type', 'citizen')
       .single()
 
-  if (existingReply) {
-    res.status(422).json({
-      error: 'Vous avez déjà répondu à ce message',
-    })
-    return
-  }
+    if (existingReply) {
+      throw new AppError(422, 'unprocessable', 'Vous avez déjà répondu à ce message.')
+    }
 
-  // Créer la réponse
-  const { data: comment, error } =
-    await supabaseAdmin
+    const { data: comment, error } = await supabaseAdmin
       .from('report_comments')
       .insert({
         report_id: reportId,
@@ -302,49 +252,39 @@ export async function createCitizenComment(
       .select()
       .single()
 
-  if (error || !comment) {
-    console.error('Error creating citizen reply:', error)
-    res.status(500).json({ error: 'Erreur serveur' })
-    return
-  }
+    if (error || !comment) throw error ?? new AppError(500, 'internal_error', 'Erreur création réponse.')
 
-  res.status(201).json(comment)
+    res.status(201).json(comment)
+  } catch (err) {
+    next(err)
+  }
 }
 
 // ─── Compteur non lus pour le dashboard ──────────────────────────
-// Retourne le nb de réponses citoyens non lues
-// par signalement pour l'agent connecté
 export async function getUnreadCount(
   req: Request,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
-  if (!req.tenant) {
-    res.status(404).json({ error: 'Tenant introuvable' })
-    return
+  try {
+    if (!req.tenant) throw notFound('Tenant')
+
+    const { data, error } = await supabaseAdmin
+      .from('report_comments')
+      .select('report_id')
+      .eq('tenant_id', req.tenant.id)
+      .eq('author_type', 'citizen')
+      .eq('read_by_agent', false)
+
+    if (error) throw error
+
+    const counts: Record<string, number> = {}
+    ;(data ?? []).forEach(c => {
+      counts[c.report_id] = (counts[c.report_id] ?? 0) + 1
+    })
+
+    res.json({ total: data?.length ?? 0, byReport: counts })
+  } catch (err) {
+    next(err)
   }
-
-  const { data, error } = await supabaseAdmin
-    .from('report_comments')
-    .select('report_id')
-    .eq('tenant_id', req.tenant.id)
-    .eq('author_type', 'citizen')
-    .eq('read_by_agent', false)
-
-  if (error) {
-    console.error('Error fetching unread count:', error)
-    res.status(500).json({ error: 'Erreur serveur' })
-    return
-  }
-
-  // Grouper par report_id
-  const counts: Record<string, number> = {}
-  ;(data ?? []).forEach(c => {
-    counts[c.report_id] =
-      (counts[c.report_id] ?? 0) + 1
-  })
-
-  res.json({
-    total: data?.length ?? 0,
-    byReport: counts,
-  })
 }
