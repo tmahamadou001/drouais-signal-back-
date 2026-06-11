@@ -76,7 +76,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Slug', 'X-API-Key'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Slug'],
 }))
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))

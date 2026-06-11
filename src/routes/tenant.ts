@@ -42,7 +42,7 @@ router.get('/config', requireTenant, async (req: Request, res: Response, next: N
     const [configResult, categoriesResult] = await Promise.all([
       supabaseAdmin
         .from('tenant_configs')
-        .select('*')
+        .select('tenant_id, city_name, map_lat, map_lng, map_zoom, map_radius_km, primary_color, feature_anonymous_reports, feature_votes, feature_ai_analysis, feature_weekly_report, feature_heatmap, updated_at')
         .eq('tenant_id', req.tenant!.id)
         .single(),
       supabaseAdmin
@@ -87,11 +87,42 @@ router.get('/categories', requireTenant, async (req: Request, res: Response, nex
 // ─── PATCH /api/tenant/config ─── Admin ─────────────────
 router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Explicit whitelist — never spread req.body directly into a DB update
+    const {
+      city_name, primary_color, logo_url, welcome_message,
+      map_lat, map_lng, map_zoom, map_radius_km,
+      feature_anonymous_reports, feature_votes, feature_ai_analysis,
+      feature_weekly_report, feature_heatmap,
+      weekly_report_day, weekly_report_hour, weekly_report_emails,
+    } = req.body
+
+    const allowedUpdate: Record<string, unknown> = {}
+    if (city_name               !== undefined) allowedUpdate.city_name                = city_name
+    if (primary_color           !== undefined) allowedUpdate.primary_color            = primary_color
+    if (logo_url                !== undefined) allowedUpdate.logo_url                 = logo_url
+    if (welcome_message         !== undefined) allowedUpdate.welcome_message          = welcome_message
+    if (map_lat                 !== undefined) allowedUpdate.map_lat                  = map_lat
+    if (map_lng                 !== undefined) allowedUpdate.map_lng                  = map_lng
+    if (map_zoom                !== undefined) allowedUpdate.map_zoom                 = map_zoom
+    if (map_radius_km           !== undefined) allowedUpdate.map_radius_km            = map_radius_km
+    if (feature_anonymous_reports !== undefined) allowedUpdate.feature_anonymous_reports = feature_anonymous_reports
+    if (feature_votes           !== undefined) allowedUpdate.feature_votes            = feature_votes
+    if (feature_ai_analysis     !== undefined) allowedUpdate.feature_ai_analysis      = feature_ai_analysis
+    if (feature_weekly_report   !== undefined) allowedUpdate.feature_weekly_report    = feature_weekly_report
+    if (feature_heatmap         !== undefined) allowedUpdate.feature_heatmap          = feature_heatmap
+    if (weekly_report_day       !== undefined) allowedUpdate.weekly_report_day        = weekly_report_day
+    if (weekly_report_hour      !== undefined) allowedUpdate.weekly_report_hour       = weekly_report_hour
+    if (weekly_report_emails    !== undefined) allowedUpdate.weekly_report_emails     = weekly_report_emails
+
+    if (Object.keys(allowedUpdate).length === 0) {
+      return res.status(400).json({ error: 'Aucun champ modifiable fourni.' })
+    }
+
     const { data, error } = await supabaseAdmin
       .from('tenant_configs')
-      .update({ ...req.body, updated_at: new Date().toISOString() })
+      .update({ ...allowedUpdate, updated_at: new Date().toISOString() })
       .eq('tenant_id', req.tenant!.id)
-      .select()
+      .select('tenant_id, city_name, map_lat, map_lng, map_zoom, map_radius_km, primary_color, logo_url, welcome_message, feature_anonymous_reports, feature_votes, feature_ai_analysis, feature_weekly_report, feature_heatmap, weekly_report_day, weekly_report_hour, weekly_report_emails, updated_at')
       .single()
 
     if (error) throw error

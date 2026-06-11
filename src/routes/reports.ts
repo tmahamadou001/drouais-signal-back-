@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken, verifyTokenOptional } from '../middleware/auth.js'
-import { validateApiKey } from '../middleware/apiKey.js'
+import { requireTrustedOrigin } from '../middleware/trustedOrigin.js'
 import { createReportSchema, updateReportSchema, paginationSchema } from '../schemas/report.schema.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
@@ -119,16 +119,13 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 })
 
 // ─── POST /api/reports — Create a new report (authenticated or anonymous) ───
-router.post('/', createReportLimiter, verifyTokenOptional, validateApiKey, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', createReportLimiter, requireTrustedOrigin, verifyTokenOptional, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { title, category, description, lat, lng, address_approx, anonymous_email } = req.body
     const ai_assisted = req.body.ai_assisted === 'true' || req.body.ai_assisted === true
     const isAnonymous = !req.userId
-    const anonymousToken = isAnonymous ? crypto.randomBytes(32).toString('hex') : null
 
-    if (isAnonymous && !req.apiKeyValid) {
-      throw new AppError(401, 'unauthorized', 'Clé API invalide ou manquante pour les signalements anonymes.')
-    }
+    const anonymousToken = isAnonymous ? crypto.randomBytes(32).toString('hex') : null
 
     if (!req.tenant) throw badRequest('Tenant requis pour créer un signalement.')
 
@@ -235,7 +232,6 @@ router.post('/', createReportLimiter, verifyTokenOptional, validateApiKey, uploa
         is_anonymous: isAnonymous,
         ai_assisted,
         has_photo: !!photo_url,
-        via_api_key: !!req.apiKeyValid,
       },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
@@ -244,7 +240,6 @@ router.post('/', createReportLimiter, verifyTokenOptional, validateApiKey, uploa
     const response: { id: string; anonymous_token?: string } = { id: data.id }
     if (isAnonymous) {
       response.anonymous_token = data.anonymous_token
-      console.log(`[Anonymous Report] Token: ${anonymousToken?.substring(0, 8)}... | Email: ${anonymous_email || 'none'}`)
     }
     res.status(201).json(response)
   } catch (err) {
