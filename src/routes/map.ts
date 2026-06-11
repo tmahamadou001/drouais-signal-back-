@@ -17,6 +17,8 @@ interface MapMarker {
 
 router.get('/markers', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const excludeResolved = req.query.exclude_resolved === 'true'
+
     let query = supabaseAdmin
       .from('reports')
       .select('id, lat, lng, status, category, title, vote_count')
@@ -26,6 +28,10 @@ router.get('/markers', async (req: Request, res: Response, next: NextFunction) =
 
     if (req.tenant?.id) {
       query = query.eq('tenant_id', req.tenant.id)
+    }
+
+    if (excludeResolved) {
+      query = query.neq('status', 'resolu')
     }
 
     const { data, error } = await query

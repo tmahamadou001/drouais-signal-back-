@@ -22,14 +22,25 @@ router.get('/', validate(paginationSchema), async (req: Request, res: Response, 
     const offset = (page - 1) * limit
     const tenantId = req.tenant?.id
 
+    const statusFilter = req.query.status as string | undefined
+    const categoryFilter = req.query.category as string | undefined
+
     let countQuery = supabaseAdmin.from('reports').select('*', { count: 'exact', head: true })
     if (tenantId) countQuery = countQuery.eq('tenant_id', tenantId)
+    if (statusFilter && statusFilter !== 'all') countQuery = countQuery.eq('status', statusFilter)
+    if (categoryFilter && categoryFilter !== 'all') countQuery = countQuery.eq('category', categoryFilter)
 
     const { count, error: countError } = await countQuery
     if (countError) throw countError
 
-    let dataQuery = supabaseAdmin.from('reports').select('*').order('created_at', { ascending: false }).range(offset, offset + limit - 1)
+    let dataQuery = supabaseAdmin
+      .from('reports')
+      .select('id, title, category, status, created_at, address_approx, lat, lng, photo_url, description, vote_count')
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1)
     if (tenantId) dataQuery = dataQuery.eq('tenant_id', tenantId)
+    if (statusFilter && statusFilter !== 'all') dataQuery = dataQuery.eq('status', statusFilter)
+    if (categoryFilter && categoryFilter !== 'all') dataQuery = dataQuery.eq('category', categoryFilter)
 
     const { data, error } = await dataQuery
     if (error) throw error
