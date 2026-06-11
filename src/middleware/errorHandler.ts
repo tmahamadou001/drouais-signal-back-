@@ -42,10 +42,18 @@ function pgErrorToAppError(err: { code?: string }): AppError | null {
 
 export function errorHandler(
   err: unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
+  // Client disconnected before the response was sent — nothing to do
+  if (
+    err instanceof Error &&
+    (err.message === 'Request aborted' || (err as any).code === 'ECONNRESET')
+  ) {
+    return
+  }
+
   if (err instanceof AppError) {
     res.status(err.status).json({ error: err.code, message: err.message })
     return
@@ -60,7 +68,18 @@ export function errorHandler(
     return
   }
 
+  // Multer errors (file too large, unexpected field, etc.)
   if (err && typeof err === 'object' && 'code' in err) {
+    const multerCode = (err as any).code as string
+    if (multerCode === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ error: 'file_too_large', message: 'Le fichier dépasse la taille maximale autorisée (5 Mo).' })
+      return
+    }
+    if (multerCode === 'LIMIT_UNEXPECTED_FILE') {
+      res.status(400).json({ error: 'bad_request', message: 'Champ de fichier inattendu.' })
+      return
+    }
+
     const mapped = pgErrorToAppError(err as { code?: string })
     if (mapped) {
       res.status(mapped.status).json({ error: mapped.code, message: mapped.message })
@@ -72,6 +91,7 @@ export function errorHandler(
   const errorId = `err_${Date.now().toString(36)}`
   console.error(`[${errorId}] Erreur non gérée:`, err)
 
+  if (res.headersSent) return
   res.status(500).json({
     error: 'internal_error',
     message: 'Une erreur interne est survenue.',

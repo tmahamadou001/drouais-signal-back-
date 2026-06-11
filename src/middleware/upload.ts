@@ -13,7 +13,9 @@ export const upload = multer({
     if (allowedMimes.includes(file.mimetype)) {
       cb(null, true)
     } else {
-      cb(new Error('Format de fichier non supporté. Utilisez JPG, PNG, WebP ou GIF.'))
+      // AppError so the error handler returns a proper 400 (not 500)
+      const { AppError } = require('./errorHandler.js')
+      cb(new AppError(400, 'invalid_file_type', 'Format de fichier non supporté. Utilisez JPG, PNG, WebP ou GIF.'))
     }
   },
 })
