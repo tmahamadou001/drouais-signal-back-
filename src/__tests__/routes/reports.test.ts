@@ -30,9 +30,10 @@ vi.mock('../../middleware/roleGuard.js', () => ({
   },
 }))
 
-vi.mock('../../middleware/apiKey.js', () => ({
-  validateApiKey: (_req: any, _res: any, next: any) => next(),
-}))
+vi.mock('../../middleware/trustedOrigin.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../middleware/trustedOrigin.js')>()
+  return { ...actual, requireTrustedOrigin: (_req: any, _res: any, next: any) => next() }
+})
 
 vi.mock('../../middleware/upload.js', () => ({
   upload: { single: () => (_req: any, _res: any, next: any) => next() },
@@ -140,31 +141,12 @@ function mockFrom(table: string, result: object) {
 describe('POST /api/reports', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('returns 401 when anonymous request has no valid api key', async () => {
-    // Re-mock validateApiKey to simulate missing key
-    vi.doMock('../../middleware/apiKey.js', () => ({
-      validateApiKey: (req: any, _res: any, next: any) => {
-        req.apiKeyValid = false
-        next()
-      },
-    }))
-
-    // Anonymous request: no userId attached by verifyTokenOptional
-    const app = express()
-    app.use(express.json())
-    app.use((req: any, _res: any, next: any) => { req.tenant = TENANT; next() })
-    app.use('/api/reports', reportsRouter)
-    app.use(errorHandler)
-
-    // Bypass all mocks for this test — inline override
-    const res = await request(app)
-      .post('/api/reports')
-      .send({ title: 'Test', category: 'voirie', lat: 48.73, lng: 1.36 })
-
-    // The middleware chain mock sets apiKeyValid = undefined (falsy) and userId = undefined
-    // so the route throws 401 unauthorized
-    expect(res.status).toBe(401)
-    expect(res.body.error).toBe('unauthorized')
+  it('requireTrustedOrigin blocks requests with no recognised Origin', async () => {
+    const { isTrustedOrigin } = await vi.importActual<typeof import('../../middleware/trustedOrigin.js')>('../../middleware/trustedOrigin.js')
+    expect(isTrustedOrigin(undefined)).toBe(false)
+    expect(isTrustedOrigin('https://evil.com')).toBe(false)
+    expect(isTrustedOrigin('https://dreux.onsignale.fr')).toBe(true)
+    expect(isTrustedOrigin('http://localhost:5173')).toBe(true)
   })
 
   it('returns 400 when tenant is missing', async () => {

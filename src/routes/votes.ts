@@ -24,11 +24,13 @@ router.post('/:id/vote', async (req: Request, res: Response, next: NextFunction)
       throw badRequest('Impossible d\'identifier l\'utilisateur.')
     }
 
-    const { data: report, error: reportError } = await supabaseAdmin
+    let reportQuery = supabaseAdmin
       .from('reports')
       .select('id, status, vote_count')
       .eq('id', reportId)
-      .single()
+    if (req.tenant?.id) reportQuery = reportQuery.eq('tenant_id', req.tenant.id)
+
+    const { data: report, error: reportError } = await reportQuery.single()
 
     if (reportError || !report) throw notFound('Signalement')
 
