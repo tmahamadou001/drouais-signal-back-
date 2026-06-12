@@ -11,6 +11,7 @@ interface CommentNotificationParams {
   agentJobTitle?: string
   message: string
   tenantName: string
+  tenantSlug: string
   reportId: string
   hasPhoto: boolean
 }
@@ -20,15 +21,15 @@ export async function sendCommentNotification(
 ): Promise<void> {
   const {
     to, reportTitle, agentName, agentJobTitle,
-    message, tenantName, reportId, hasPhoto,
+    message, tenantName, tenantSlug, reportId, hasPhoto,
   } = params
 
   const agentDisplay = agentJobTitle
-    ? `${agentName} — ${agentJobTitle}` 
+    ? `${agentName} — ${agentJobTitle}`
     : agentName
 
-  const appUrl = process.env.APP_URL
-    ?? 'https://onsignale.fr'
+  const baseUrl = process.env.APP_URL ?? 'https://onsignale.fr'
+  const appUrl = baseUrl.replace('://', `://${tenantSlug}.`)
 
   await resend.emails.send({
     from: `OnSignale <noreply@onsignale.fr>`,

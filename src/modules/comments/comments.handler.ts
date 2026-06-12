@@ -139,8 +139,8 @@ export async function createAgentComment(
       .single()
 
     const agentName = agentProfile
-      ? [agentProfile.first_name, agentProfile.last_name].filter(Boolean).join(' ') || 'Agent municipal'
-      : 'Agent municipal'
+      ? [agentProfile.first_name, agentProfile.last_name].filter(Boolean).join(' ') || 'Admin'
+      : 'Admin'
 
     const { data: comment, error } = await supabaseAdmin
       .from('report_comments')
@@ -170,6 +170,7 @@ export async function createAgentComment(
         agentJobTitle: agentProfile?.job_title,
         message: content,
         tenantName: req.tenant.name,
+        tenantSlug: req.tenant.slug,
         reportId,
         hasPhoto: !!photoUrl,
       }).catch(err => {
