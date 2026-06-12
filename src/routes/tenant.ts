@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, NextFunction, type Router as ExpressRouter } from 'express'
+import { Resend } from 'resend'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
 import { requireTenant, invalidateTenantCache } from '../middleware/tenantResolver.js'
@@ -6,6 +7,7 @@ import { requireTenantAdmin, requireSuperAdmin } from '../middleware/roleGuard.j
 import { auditUserCreated, auditTenantCreated, auditTenantStatusChanged, createAuditLog } from '../services/auditService.js'
 import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
 import { getAuthEmailMap } from '../lib/authHelpers.js'
+import { buildInviteEmail } from '../templates/inviteNotification.js'
 import type { TenantUser, TenantCategory } from '../types/tenant.js'
 
 const router: ExpressRouter = Router()
@@ -227,27 +229,36 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
 
     if (!email || !role) throw badRequest('email et role requis.')
 
-    let userId: string
+    const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
 
-    const { data: userData, error: userError } =
-      await supabaseAdmin.auth.admin.createUser({
-        email,
-        email_confirm: true,
-        app_metadata: { role: 'agent' },
-      })
+    // Récupère la config du tenant pour city_name
+    const { data: tenantConfig } = await supabaseAdmin
+      .from('tenant_configs')
+      .select('city_name')
+      .eq('tenant_id', req.tenant!.id)
+      .single()
 
-    if (userError?.message?.includes('already registered')) {
-      const { data: existing } = await supabaseAdmin.auth.admin.listUsers()
-      const found = existing?.users?.find((u) => u.email === email)
-      if (!found) throw new AppError(500, 'internal_error', 'Utilisateur introuvable.')
-      userId = found.id
-    } else if (userError || !userData.user) {
-      console.error('[Invite] Erreur création utilisateur Supabase:', userError)
-      throw new AppError(500, 'internal_error', 'Erreur lors de la création du compte utilisateur.')
-    } else {
-      userId = userData.user.id
+    // Génère le lien d'invitation Supabase (crée le compte si besoin)
+    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'invite',
+      email,
+      options: {
+        redirectTo: `${clientUrl}/set-password`,
+      },
+    })
+
+    if (linkError || !linkData.user) {
+      console.error('[Invite] Erreur generateLink:', linkError)
+      throw new AppError(500, 'internal_error', 'Erreur lors de la génération du lien d\'invitation.')
     }
 
+    const userId = linkData.user.id
+
+    // Si email_confirmed_at est défini → compte existant (citoyen inscrit)
+    // → on l'ajoute à l'équipe sans lui demander de créer un nouveau mot de passe
+    const isExistingUser = !!linkData.user.email_confirmed_at
+
+    // Upsert dans tenant_users
     const { data, error } = await supabaseAdmin
       .from('tenant_users')
       .upsert({
@@ -266,6 +277,29 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
 
     if (error) throw error
 
+    // Email : avec lien de création de mdp pour un nouveau compte,
+    // ou simple notification pour un compte existant
+    const resend = new Resend(process.env.RESEND_API_KEY)
+    const cityLabel = tenantConfig?.city_name ?? req.tenant!.name
+    const { html, text } = buildInviteEmail({
+      recipientEmail: email,
+      firstName: firstName ?? null,
+      role,
+      tenantName: req.tenant!.name,
+      cityName: tenantConfig?.city_name ?? null,
+      actionLink: isExistingUser ? null : linkData.properties.action_link,
+    })
+
+    await resend.emails.send({
+      from: `OnSignale <${process.env.EMAIL_FROM ?? 'invitations@onsignale.fr'}>`,
+      to: email,
+      subject: isExistingUser
+        ? `Vous avez rejoint l'équipe OnSignale — ${cityLabel}`
+        : `Invitation à rejoindre OnSignale — ${cityLabel}`,
+      html,
+      text,
+    }).catch(err => console.error('[Invite] Erreur envoi email:', err))
+
     auditUserCreated({
       userId,
       userEmail: email,
@@ -279,6 +313,72 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
     }).catch(err => console.error('[Audit] Erreur:', err))
 
     res.status(201).json(data)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ─── POST /api/tenant/users/:userId/resend-invite ─── Admin ─
+router.post('/users/:userId/resend-invite', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { userId } = req.params
+
+    // Récupère le membre pour avoir son email
+    const { data: member, error: memberError } = await supabaseAdmin
+      .from('tenant_users')
+      .select('user_id, role, first_name')
+      .eq('tenant_id', req.tenant!.id)
+      .eq('user_id', userId)
+      .single()
+
+    if (memberError || !member) throw notFound('Membre')
+
+    // Récupère l'email depuis auth
+    const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.getUserById(userId)
+    if (authError || !authUser.user?.email) throw new AppError(500, 'internal_error', 'Impossible de récupérer l\'email.')
+
+    const email = authUser.user.email
+    const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
+
+    const { data: tenantConfig } = await supabaseAdmin
+      .from('tenant_configs')
+      .select('city_name')
+      .eq('tenant_id', req.tenant!.id)
+      .single()
+
+    // Génère un lien de récupération (reset password) qui redirige vers /set-password
+    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'recovery',
+      email,
+      options: {
+        redirectTo: `${clientUrl}/set-password`,
+      },
+    })
+
+    if (linkError || !linkData) {
+      console.error('[ResendInvite] Erreur generateLink:', linkError)
+      throw new AppError(500, 'internal_error', 'Erreur lors de la génération du lien.')
+    }
+
+    const resend = new Resend(process.env.RESEND_API_KEY)
+    const { html, text } = buildInviteEmail({
+      recipientEmail: email,
+      firstName: member.first_name ?? null,
+      role: member.role,
+      tenantName: req.tenant!.name,
+      cityName: tenantConfig?.city_name ?? null,
+      actionLink: linkData.properties.action_link,
+    })
+
+    await resend.emails.send({
+      from: `OnSignale <${process.env.EMAIL_FROM ?? 'invitations@onsignale.fr'}>`,
+      to: email,
+      subject: `Accès à votre compte OnSignale — ${tenantConfig?.city_name ?? req.tenant!.name}`,
+      html,
+      text,
+    })
+
+    res.json({ success: true })
   } catch (err) {
     next(err)
   }

@@ -5,6 +5,12 @@ import { errorHandler } from '../../middleware/errorHandler.js'
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
+vi.mock('resend', () => ({
+  Resend: class {
+    emails = { send: () => Promise.resolve({ id: 'email-id' }) }
+  },
+}))
+
 vi.mock('../../lib/supabaseAdmin.js', () => ({
   supabaseAdmin: {
     from: vi.fn(),
@@ -13,6 +19,7 @@ vi.mock('../../lib/supabaseAdmin.js', () => ({
         getUserById: vi.fn(),
         createUser: vi.fn(),
         listUsers: vi.fn(),
+        generateLink: vi.fn(),
       },
     },
   },
@@ -123,19 +130,30 @@ describe('POST /api/tenant/users/invite', () => {
     expect(res.body.error).toBe('bad_request')
   })
 
-  it('returns 201 on successful invite', async () => {
-    vi.mocked(supabaseAdmin.auth.admin.createUser).mockResolvedValue({
-      data: { user: { id: 'new-user-id', email: 'agent@dreux.fr' } as any },
+  it('returns 201 on successful invite (new user)', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {
+        user: { id: 'new-user-id', email: 'agent@dreux.fr', email_confirmed_at: null } as any,
+        properties: { action_link: 'https://supabase.co/invite?token=abc' } as any,
+      },
       error: null,
     })
 
-    const singleResult = vi.fn().mockResolvedValue({
-      data: { id: 'tu-1', user_id: 'new-user-id', role: 'agent' },
-      error: null,
+    // from('tenant_configs').select().eq().single() — city_name
+    const configSingle = vi.fn().mockResolvedValue({ data: { city_name: 'Dreux' }, error: null })
+    const configEq     = vi.fn().mockReturnValue({ single: configSingle })
+    const configSelect = vi.fn().mockReturnValue({ eq: configEq })
+
+    // from('tenant_users').upsert().select().single()
+    const upsertSingle = vi.fn().mockResolvedValue({ data: { id: 'tu-1', user_id: 'new-user-id', role: 'agent' }, error: null })
+    const upsertSelect = vi.fn().mockReturnValue({ single: upsertSingle })
+    const upsert       = vi.fn().mockReturnValue({ select: upsertSelect })
+
+    vi.mocked(supabaseAdmin.from).mockImplementation((table: string) => {
+      if (table === 'tenant_configs') return { select: configSelect } as any
+      if (table === 'tenant_users')   return { upsert } as any
+      return {} as any
     })
-    const select  = vi.fn().mockReturnValue({ single: singleResult })
-    const upsert  = vi.fn().mockReturnValue({ select })
-    vi.mocked(supabaseAdmin.from).mockReturnValue({ upsert } as any)
 
     const res = await request(makeApp())
       .post('/api/tenant/users/invite')
@@ -143,6 +161,120 @@ describe('POST /api/tenant/users/invite', () => {
 
     expect(res.status).toBe(201)
     expect(res.body).toMatchObject({ role: 'agent' })
+    expect(supabaseAdmin.auth.admin.generateLink).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'invite', email: 'agent@dreux.fr' })
+    )
+  })
+
+  it('returns 201 and skips password link for existing confirmed user', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {
+        user: { id: 'existing-user-id', email: 'citizen@dreux.fr', email_confirmed_at: '2024-01-01T00:00:00Z' } as any,
+        properties: { action_link: 'https://supabase.co/invite?token=abc' } as any,
+      },
+      error: null,
+    })
+
+    const configSingle = vi.fn().mockResolvedValue({ data: { city_name: 'Dreux' }, error: null })
+    const configEq     = vi.fn().mockReturnValue({ single: configSingle })
+    const configSelect = vi.fn().mockReturnValue({ eq: configEq })
+
+    const upsertSingle = vi.fn().mockResolvedValue({ data: { id: 'tu-2', user_id: 'existing-user-id', role: 'observer' }, error: null })
+    const upsertSelect = vi.fn().mockReturnValue({ single: upsertSingle })
+    const upsert       = vi.fn().mockReturnValue({ select: upsertSelect })
+
+    vi.mocked(supabaseAdmin.from).mockImplementation((table: string) => {
+      if (table === 'tenant_configs') return { select: configSelect } as any
+      if (table === 'tenant_users')   return { upsert } as any
+      return {} as any
+    })
+
+    const res = await request(makeApp())
+      .post('/api/tenant/users/invite')
+      .send({ email: 'citizen@dreux.fr', role: 'observer' })
+
+    expect(res.status).toBe(201)
+    expect(res.body).toMatchObject({ role: 'observer' })
+  })
+
+  it('returns 500 when generateLink fails', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: { user: null, properties: null } as any,
+      error: { message: 'Supabase error' } as any,
+    })
+
+    const configSingle = vi.fn().mockResolvedValue({ data: { city_name: 'Dreux' }, error: null })
+    const configEq     = vi.fn().mockReturnValue({ single: configSingle })
+    const configSelect = vi.fn().mockReturnValue({ eq: configEq })
+    vi.mocked(supabaseAdmin.from).mockImplementation((table: string) => {
+      if (table === 'tenant_configs') return { select: configSelect } as any
+      return {} as any
+    })
+
+    const res = await request(makeApp())
+      .post('/api/tenant/users/invite')
+      .send({ email: 'agent@dreux.fr', role: 'agent' })
+
+    expect(res.status).toBe(500)
+  })
+})
+
+describe('POST /api/tenant/users/:userId/resend-invite', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('returns 404 when member is not in tenant_users', async () => {
+    const single = vi.fn().mockResolvedValue({ data: null, error: { message: 'not found' } })
+    const eq2    = vi.fn().mockReturnValue({ single })
+    const eq1    = vi.fn().mockReturnValue({ eq: eq2 })
+    const select = vi.fn().mockReturnValue({ eq: eq1 })
+    vi.mocked(supabaseAdmin.from).mockReturnValue({ select } as any)
+
+    const res = await request(makeApp())
+      .post('/api/tenant/users/ghost-id/resend-invite')
+
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 200 and calls generateLink with type recovery', async () => {
+    const memberSingle = vi.fn().mockResolvedValue({
+      data: { user_id: 'user-abc', role: 'agent', first_name: 'Jean' },
+      error: null,
+    })
+    const memberEq2 = vi.fn().mockReturnValue({ single: memberSingle })
+    const memberEq1 = vi.fn().mockReturnValue({ eq: memberEq2 })
+    const memberSel = vi.fn().mockReturnValue({ eq: memberEq1 })
+
+    const configSingle = vi.fn().mockResolvedValue({ data: { city_name: 'Dreux' }, error: null })
+    const configEq     = vi.fn().mockReturnValue({ single: configSingle })
+    const configSel    = vi.fn().mockReturnValue({ eq: configEq })
+
+    vi.mocked(supabaseAdmin.from).mockImplementation((table: string) => {
+      if (table === 'tenant_users')   return { select: memberSel } as any
+      if (table === 'tenant_configs') return { select: configSel } as any
+      return {} as any
+    })
+
+    vi.mocked(supabaseAdmin.auth.admin.getUserById).mockResolvedValue({
+      data: { user: { id: 'user-abc', email: 'jean@dreux.fr' } as any },
+      error: null,
+    })
+
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {
+        user: { id: 'user-abc' } as any,
+        properties: { action_link: 'https://supabase.co/recovery?token=xyz' } as any,
+      },
+      error: null,
+    })
+
+    const res = await request(makeApp())
+      .post('/api/tenant/users/user-abc/resend-invite')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ success: true })
+    expect(supabaseAdmin.auth.admin.generateLink).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'recovery', email: 'jean@dreux.fr' })
+    )
   })
 })
 
