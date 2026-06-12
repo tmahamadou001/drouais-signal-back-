@@ -5,6 +5,7 @@ const resend = new Resend(process.env.RESEND_API_KEY)
 
 export interface WeeklyStats {
   period: { from: string; to: string }
+  city_name: string
   new_reports: number
   resolved: number
   in_progress: number
@@ -179,11 +180,22 @@ async function collectStats(tenantId?: string): Promise<WeeklyStats> {
     0
   )
 
+  let cityName = 'la ville'
+  if (tenantId) {
+    const { data } = await supabaseAdmin
+      .from('tenant_configs')
+      .select('city_name')
+      .eq('tenant_id', tenantId)
+      .single()
+    if (data?.city_name) cityName = data.city_name
+  }
+
   return {
     period: {
       from: formatDate(weekStart),
       to: formatDate(weekEnd),
     },
+    city_name: cityName,
     new_reports: newReportsCount,
     resolved: resolvedCount,
     in_progress: inProgressCount,
@@ -198,7 +210,7 @@ async function collectStats(tenantId?: string): Promise<WeeklyStats> {
 async function generateAiText(stats: WeeklyStats): Promise<string> {
   const prompt = `Tu es un assistant municipal qui rédige des résumés hebdomadaires professionnels pour des élus locaux français.
 
-Voici les données de la semaine du ${stats.period.from} au ${stats.period.to} pour la ville de Dreux :
+Voici les données de la semaine du ${stats.period.from} au ${stats.period.to} pour la ville de ${stats.city_name} :
 - ${stats.new_reports} nouveaux signalements (${stats.vs_last_week >= 0 ? '+' : ''}${stats.vs_last_week} vs semaine précédente)
 - ${stats.resolved} signalements résolus
 - ${stats.in_progress} signalements en cours de traitement
@@ -263,7 +275,7 @@ Maximum 200 mots. En français uniquement. IMPORTANT : Rédige le texte complet,
 
   // Fallback si Gemini échoue
   console.log('[WeeklyReport] Utilisation du texte fallback')
-  return `Cette semaine du ${stats.period.from} au ${stats.period.to}, ${stats.new_reports} nouveaux signalements ont été enregistrés sur Dreux (${stats.vs_last_week >= 0 ? '+' : ''}${stats.vs_last_week} vs semaine précédente).
+  return `Cette semaine du ${stats.period.from} au ${stats.period.to}, ${stats.new_reports} nouveaux signalements ont été enregistrés sur ${stats.city_name} (${stats.vs_last_week >= 0 ? '+' : ''}${stats.vs_last_week} vs semaine précédente).
 
 ${stats.resolved} signalements ont été résolus et ${stats.in_progress} sont en cours de traitement. Cependant, ${stats.overdue} signalements dépassent 7 jours sans résolution, nécessitant une attention particulière.
 

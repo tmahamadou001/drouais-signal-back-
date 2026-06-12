@@ -314,6 +314,7 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin, validate(updateRepo
       photoUrl: currentReport.photo_url,
       createdAt: currentReport.created_at,
       userId: currentReport.user_id,
+      tenantId: req.tenant?.id,
       isAnonymous: currentReport.is_anonymous,
       anonymousToken: currentReport.anonymous_token,
     }).catch(err => {

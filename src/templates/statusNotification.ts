@@ -52,6 +52,7 @@ interface StatusEmailParams {
   photoUrl: string | null
   createdAt: string
   frontendUrl: string
+  cityName?: string
   isAnonymous?: boolean
   anonymousToken?: string | null
 }
@@ -92,7 +93,7 @@ export const buildStatusEmail = (params: StatusEmailParams): string => {
                     <span style="font-size: 24px; font-weight: 700; color: ${COLORS.white};">🔔 OnSignale</span>
                   </td>
                   <td style="text-align: right;">
-                    <span style="font-size: 14px; color: rgba(255, 255, 255, 0.9); font-weight: 500;">Dreux</span>
+                    <span style="font-size: 14px; color: rgba(255, 255, 255, 0.9); font-weight: 500;">${params.cityName ?? 'OnSignale'}</span>
                   </td>
                 </tr>
               </table>

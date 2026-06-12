@@ -15,6 +15,7 @@ interface StatusChangeParams {
   photoUrl: string | null
   createdAt: string
   userId: string | null
+  tenantId?: string | null
   isAnonymous?: boolean
   anonymousToken?: string | null
 }
@@ -54,6 +55,16 @@ export async function sendStatusChangeNotification(
     return
   }
 
+  let cityName: string | undefined
+  if (params.tenantId) {
+    const { data } = await supabaseAdmin
+      .from('tenant_configs')
+      .select('city_name')
+      .eq('tenant_id', params.tenantId)
+      .single()
+    cityName = data?.city_name ?? undefined
+  }
+
   const html = buildStatusEmail({
     reportTitle: params.reportTitle,
     reportId: params.reportId,
@@ -63,6 +74,7 @@ export async function sendStatusChangeNotification(
     photoUrl: params.photoUrl,
     createdAt: params.createdAt,
     frontendUrl: process.env.FRONTEND_URL || 'https://onsignale.fr',
+    cityName,
     isAnonymous: params.isAnonymous,
     anonymousToken: params.anonymousToken,
   })
