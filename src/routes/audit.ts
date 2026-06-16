@@ -135,6 +135,7 @@ router.get('/actions', verifyToken, (_req: Request, res: Response) => {
       'report.status_changed',
       'report.deleted',
       'report.bulk_deleted',
+      'report.service_notified',
       'tenant.created',
       'tenant.status_changed',
       'tenant_config.updated',

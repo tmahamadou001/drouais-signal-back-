@@ -150,7 +150,7 @@ router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (r
 // ─── PUT /api/tenant/categories ─── Admin ───────────────
 router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    type CategoryInput = { slug: string; label: string; icon?: string; color?: string; description?: string; isActive?: boolean; sortOrder?: number; slaHours?: number }
+    type CategoryInput = { slug: string; label: string; icon?: string; color?: string; description?: string; isActive?: boolean; sortOrder?: number; slaHours?: number; serviceName?: string | null; serviceEmails?: string[] }
     const { categories } = req.body as { categories: CategoryInput[] }
     if (!Array.isArray(categories) || categories.length === 0) {
       throw badRequest('categories requis.')
@@ -169,6 +169,8 @@ router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async 
           is_active: cat.isActive ?? true,
           sort_order: cat.sortOrder ?? index,
           sla_hours: cat.slaHours ?? 168,
+          service_name: cat.serviceName ?? null,
+          service_emails: cat.serviceEmails ?? [],
         })),
         { onConflict: 'tenant_id,slug' }
       )

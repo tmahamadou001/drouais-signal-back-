@@ -2,11 +2,12 @@ import { Router, Request, Response, NextFunction } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
+import { voteLimiter, voteReadLimiter } from '../middleware/rateLimits.js'
 import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
 
 const router: ExpressRouter = Router()
 
-router.post('/:id/vote', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/vote', voteLimiter, verifyToken, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const reportId = req.params.id
     const userId = req.userId!
@@ -42,7 +43,7 @@ router.post('/:id/vote', verifyToken, async (req: Request, res: Response, next: 
   }
 })
 
-router.delete('/:id/vote', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id/vote', voteLimiter, verifyToken, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const reportId = req.params.id
     const userId = req.userId
@@ -76,7 +77,7 @@ router.delete('/:id/vote', verifyToken, async (req: Request, res: Response, next
   }
 })
 
-router.get('/:id/my-vote', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id/my-vote', voteReadLimiter, verifyToken, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const reportId = req.params.id
 

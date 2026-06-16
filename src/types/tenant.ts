@@ -47,6 +47,8 @@ export interface TenantCategory {
   is_active: boolean
   sort_order: number
   sla_hours: number
+  service_name?: string | null
+  service_emails?: string[]
 }
 
 export interface TenantUser {

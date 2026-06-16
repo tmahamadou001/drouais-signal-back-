@@ -56,6 +56,7 @@ vi.mock('../../services/auditService.js', () => ({
 
 vi.mock('../../services/notificationService.js', () => ({
   sendStatusChangeNotification: vi.fn().mockResolvedValue(undefined),
+  sendServiceNotification: vi.fn().mockResolvedValue(undefined),
 }))
 
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
@@ -351,6 +352,101 @@ describe('DELETE /api/reports/:id', () => {
     const res = await request(makeApp()).delete('/api/reports/report-1')
     expect(res.status).toBe(200)
     expect(res.body.success).toBe(true)
+  })
+})
+
+describe('POST /api/reports — service notification', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  function buildPostApp() {
+    const app = express()
+    app.use(express.json())
+    app.use((req: any, _res: any, next: any) => {
+      req.tenant = TENANT
+      req.userId = 'user-123'
+      next()
+    })
+    app.use('/api/reports', reportsRouter)
+    app.use(errorHandler)
+    return app
+  }
+
+  it('calls sendServiceNotification after successful report creation', async () => {
+    const { sendServiceNotification } = await import('../../services/notificationService.js')
+
+    const eqIsActive  = vi.fn().mockResolvedValue({ data: [{ slug: 'voirie' }], error: null })
+    const eqCatTenant = vi.fn().mockReturnValue({ eq: eqIsActive })
+    const selectCat   = vi.fn().mockReturnValue({ eq: eqCatTenant })
+
+    const singleCfg = vi.fn().mockResolvedValue({ data: null, error: null })
+    const eqCfg     = vi.fn().mockReturnValue({ single: singleCfg })
+    const selectCfg = vi.fn().mockReturnValue({ eq: eqCfg })
+
+    const singleInsert = vi.fn().mockResolvedValue({
+      data: { id: 'report-svc', anonymous_token: null },
+      error: null,
+    })
+    const selectInsert = vi.fn().mockReturnValue({ single: singleInsert })
+    const insert       = vi.fn().mockReturnValue({ select: selectInsert })
+
+    vi.mocked(supabaseAdmin.rpc).mockResolvedValue({ data: null, error: null } as any)
+
+    vi.mocked(supabaseAdmin.from).mockImplementation((table: string) => {
+      if (table === 'tenant_categories') return { select: selectCat } as any
+      if (table === 'tenant_configs')    return { select: selectCfg } as any
+      if (table === 'reports')           return { insert } as any
+      return {} as any
+    })
+
+    const res = await request(buildPostApp())
+      .post('/api/reports')
+      .send({ title: 'Lampadaire cassé', category: 'voirie', lat: 48.73, lng: 1.36 })
+
+    expect(res.status).toBe(201)
+    expect(sendServiceNotification).toHaveBeenCalledOnce()
+    expect(sendServiceNotification).toHaveBeenCalledWith(expect.objectContaining({
+      reportId: 'report-svc',
+      reportTitle: 'Lampadaire cassé',
+      category: 'voirie',
+      tenantId: 'tenant-1',
+      tenantSlug: 'dreux',
+    }))
+  })
+
+  it('does not block the response if sendServiceNotification rejects', async () => {
+    const { sendServiceNotification } = await import('../../services/notificationService.js')
+    vi.mocked(sendServiceNotification).mockRejectedValueOnce(new Error('SMTP failure'))
+
+    const eqIsActive  = vi.fn().mockResolvedValue({ data: [{ slug: 'voirie' }], error: null })
+    const eqCatTenant = vi.fn().mockReturnValue({ eq: eqIsActive })
+    const selectCat   = vi.fn().mockReturnValue({ eq: eqCatTenant })
+
+    const singleCfg = vi.fn().mockResolvedValue({ data: null, error: null })
+    const eqCfg     = vi.fn().mockReturnValue({ single: singleCfg })
+    const selectCfg = vi.fn().mockReturnValue({ eq: eqCfg })
+
+    const singleInsert = vi.fn().mockResolvedValue({
+      data: { id: 'report-err', anonymous_token: null },
+      error: null,
+    })
+    const selectInsert = vi.fn().mockReturnValue({ single: singleInsert })
+    const insert       = vi.fn().mockReturnValue({ select: selectInsert })
+
+    vi.mocked(supabaseAdmin.rpc).mockResolvedValue({ data: null, error: null } as any)
+
+    vi.mocked(supabaseAdmin.from).mockImplementation((table: string) => {
+      if (table === 'tenant_categories') return { select: selectCat } as any
+      if (table === 'tenant_configs')    return { select: selectCfg } as any
+      if (table === 'reports')           return { insert } as any
+      return {} as any
+    })
+
+    const res = await request(buildPostApp())
+      .post('/api/reports')
+      .send({ title: 'Test', category: 'voirie', lat: 48.73, lng: 1.36 })
+
+    // Response must still be 201 — notification is fire-and-forget
+    expect(res.status).toBe(201)
   })
 })
 

@@ -27,6 +27,7 @@ export type AuditAction =
   | 'user.revoked'
   | 'report.created'
   | 'report.status_changed'
+  | 'report.service_notified'
   | 'report.deleted'
   | 'report.bulk_deleted'
   | 'tenant.created'
@@ -268,5 +269,32 @@ export async function auditTenantStatusChanged(params: {
     },
     ipAddress: params.ipAddress,
     userAgent: params.userAgent,
+  })
+}
+
+export async function auditReportServiceNotified(params: {
+  reportId: string
+  reportTitle?: string
+  category: string
+  serviceName: string
+  serviceEmails: string[]
+  tenantId?: string
+  tenantSlug?: string
+}) {
+  await createAuditLog({
+    // Pas de userId : action déclenchée automatiquement par le système
+    userEmail: 'system',
+    userRole:  'system',
+    action: 'report.service_notified',
+    entityType: 'report',
+    entityId: params.reportId,
+    tenantId: params.tenantId,
+    tenantSlug: params.tenantSlug,
+    metadata: {
+      report_title:   params.reportTitle,
+      category:       params.category,
+      service_name:   params.serviceName,
+      service_emails: params.serviceEmails,
+    },
   })
 }

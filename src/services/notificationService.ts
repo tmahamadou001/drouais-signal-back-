@@ -1,7 +1,9 @@
 import { Resend } from 'resend'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { buildStatusEmail } from '../templates/statusNotification.js'
+import { buildServiceNotificationEmail } from '../templates/serviceNotification.js'
 import { getAuthUserEmail } from '../lib/authHelpers.js'
+import { auditReportServiceNotified } from './auditService.js'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -116,5 +118,135 @@ export async function sendStatusChangeNotification(
     }
   } catch (err) {
     console.error('[Notification] Exception Resend:', err)
+  }
+}
+
+// ─── Notification service municipal à la création d'un signalement ───────────
+
+interface ServiceNotificationParams {
+  reportId: string
+  reportTitle: string
+  category: string
+  description?: string | null
+  addressApprox?: string | null
+  photoUrl?: string | null
+  createdAt: string
+  isAnonymous: boolean
+  tenantId: string
+  tenantSlug: string
+}
+
+export async function sendServiceNotification(params: ServiceNotificationParams): Promise<void> {
+  // Récupère la catégorie avec ses emails de service
+  const { data: cat } = await supabaseAdmin
+    .from('tenant_categories')
+    .select('slug, label, icon, service_name, service_emails')
+    .eq('tenant_id', params.tenantId)
+    .eq('slug', params.category)
+    .single()
+
+  if (!cat?.service_emails?.length) return
+
+  // Récupère la config tenant (city_name, name)
+  const { data: config } = await supabaseAdmin
+    .from('tenant_configs')
+    .select('city_name')
+    .eq('tenant_id', params.tenantId)
+    .single()
+
+  const { data: tenant } = await supabaseAdmin
+    .from('tenants')
+    .select('name')
+    .eq('id', params.tenantId)
+    .single()
+
+  const { html, text } = buildServiceNotificationEmail({
+    recipientEmails: cat.service_emails,
+    serviceName: cat.service_name ?? cat.label,
+    tenantName: tenant?.name ?? 'OnSignale',
+    tenantSlug: params.tenantSlug,
+    cityName: config?.city_name ?? tenant?.name ?? 'la ville',
+    reportId: params.reportId,
+    reportTitle: params.reportTitle,
+    category: cat.label,
+    categoryIcon: cat.icon ?? '📌',
+    description: params.description,
+    addressApprox: params.addressApprox,
+    photoUrl: params.photoUrl,
+    createdAt: params.createdAt,
+    isAnonymous: params.isAnonymous,
+  })
+
+  try {
+    const { error } = await resend.emails.send({
+      from: 'OnSignale <notifications@onsignale.fr>',
+      to: cat.service_emails,
+      subject: `[${cat.icon ?? '📌'} ${cat.label}] Nouveau signalement — ${params.reportTitle.substring(0, 60)}`,
+      html,
+      text,
+      tags: [
+        { name: 'type',     value: 'service_notification' },
+        { name: 'category', value: params.category },
+      ],
+    })
+
+    if (error) {
+      console.error('[ServiceNotif] Erreur Resend:', error)
+      return
+    }
+
+    console.log(`[ServiceNotif] Email envoyé → ${cat.service_emails.join(', ')} (${params.category})`)
+
+    auditReportServiceNotified({
+      reportId:      params.reportId,
+      reportTitle:   params.reportTitle,
+      category:      params.category,
+      serviceName:   cat.service_name ?? cat.label,
+      serviceEmails: cat.service_emails,
+      tenantId:      params.tenantId,
+      tenantSlug:    params.tenantSlug,
+    }).catch(err => console.error('[ServiceNotif] Erreur audit:', err))
+
+    // Email transmis avec succès → passage automatique en "pris_en_charge"
+    const { error: rpcError } = await supabaseAdmin.rpc('update_report_status_atomic', {
+      p_report_id:  params.reportId,
+      p_new_status: 'pris_en_charge',
+      p_agent_id:   null, // changement système, pas un agent humain
+      p_tenant_id:  params.tenantId,
+      p_comment:    'Transmis automatiquement au service concerné',
+    })
+
+    if (rpcError) {
+      console.error('[ServiceNotif] Erreur mise à jour statut:', rpcError)
+      return
+    }
+
+    console.log(`[ServiceNotif] Statut → pris_en_charge (${params.reportId})`)
+
+    // Notifier le créateur du signalement du changement de statut
+    const { data: report } = await supabaseAdmin
+      .from('reports')
+      .select('user_id, is_anonymous, anonymous_token, created_at, address_approx, photo_url')
+      .eq('id', params.reportId)
+      .single()
+
+    if (report) {
+      sendStatusChangeNotification({
+        reportId:      params.reportId,
+        reportTitle:   params.reportTitle,
+        newStatus:     'pris_en_charge',
+        previousStatus: 'en_attente',
+        category:      params.category,
+        addressApprox: report.address_approx ?? null,
+        photoUrl:      report.photo_url ?? null,
+        createdAt:     report.created_at,
+        userId:        report.user_id ?? null,
+        tenantId:      params.tenantId,
+        isAnonymous:   report.is_anonymous ?? params.isAnonymous,
+        anonymousToken: report.anonymous_token ?? null,
+      }).catch(err => console.error('[ServiceNotif] Erreur notification créateur:', err))
+    }
+  } catch (err) {
+    console.error('[ServiceNotif] Exception Resend:', err)
   }
 }

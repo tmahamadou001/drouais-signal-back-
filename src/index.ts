@@ -4,7 +4,6 @@ import helmet from 'helmet'
 import {
   globalApiLimiter,
   duplicateCheckLimiter,
-  voteLimiter,
   analyzeLimiter,
   heatmapLimiter,
   adminSlowDown,
@@ -92,7 +91,7 @@ app.use('/api/', resolveTenant)
 // Routes publiques avec rate limiting spécifique
 app.use('/api/reports', reportsRouter)
 app.use('/api/reports', duplicateCheckLimiter, duplicatesRouter)
-app.use('/api/reports', voteLimiter, votesRouter)
+app.use('/api/reports', votesRouter)
 app.use('/api/reports/:reportId/comments', commentsRouter)
 app.use('/api/comments', unreadCommentsRouter)
 app.use('/api/upload', uploadRouter)

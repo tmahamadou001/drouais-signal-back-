@@ -43,6 +43,14 @@ export const voteLimiter = rateLimit({
   legacyHeaders: false,
 })
 
+export const voteReadLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 60,
+  message: { error: 'rate_limit', message: 'Trop de requêtes. Réessayez dans 1 minute.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
 export const analyzeLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 10,

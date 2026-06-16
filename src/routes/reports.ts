@@ -6,7 +6,7 @@ import { createReportSchema, updateReportSchema, paginationSchema } from '../sch
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
-import { sendStatusChangeNotification } from '../services/notificationService.js'
+import { sendStatusChangeNotification, sendServiceNotification } from '../services/notificationService.js'
 import { requireTenantAdmin } from '../middleware/roleGuard.js'
 import { auditReportStatusChanged, auditReportDeleted, auditReportBulkDeleted, createAuditLog } from '../services/auditService.js'
 import { createReportLimiter } from '../middleware/rateLimits.js'
@@ -247,6 +247,20 @@ router.post('/', createReportLimiter, requireTrustedOrigin, verifyTokenOptional,
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
     }).catch(err => console.error('[Audit] Erreur:', err))
+
+    // Transmission asynchrone au service municipal concerné (non bloquant)
+    sendServiceNotification({
+      reportId: data.id,
+      reportTitle: title.trim(),
+      category,
+      description: description?.trim() || null,
+      addressApprox: address_approx?.trim() || null,
+      photoUrl: photo_url || null,
+      createdAt: new Date().toISOString(),
+      isAnonymous,
+      tenantId: req.tenant!.id,
+      tenantSlug: req.tenant!.slug,
+    }).catch(err => console.error('[ServiceNotif] Erreur:', err))
 
     const response: { id: string; anonymous_token?: string } = { id: data.id }
     if (isAnonymous) {

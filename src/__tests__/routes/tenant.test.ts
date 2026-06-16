@@ -117,6 +117,66 @@ describe('PUT /api/tenant/categories', () => {
     expect(res.status).toBe(200)
     expect(res.body).toEqual(upsertResult)
   })
+
+  it('persists service_name and service_emails in upsert payload', async () => {
+    const upsertResult = [{
+      id: 'cat-1',
+      slug: 'voirie',
+      label: 'Voirie',
+      service_name: 'Service Voirie',
+      service_emails: ['voirie@dreux.fr', 'technique@dreux.fr'],
+    }]
+    const select = vi.fn().mockResolvedValue({ data: upsertResult, error: null })
+    const upsert = vi.fn().mockReturnValue({ select })
+    vi.mocked(supabaseAdmin.from).mockReturnValue({ upsert } as any)
+
+    const res = await request(makeApp())
+      .put('/api/tenant/categories')
+      .send({
+        categories: [{
+          slug:          'voirie',
+          label:         'Voirie',
+          icon:          '🛣️',
+          color:         '#EF4444',
+          serviceName:   'Service Voirie',
+          serviceEmails: ['voirie@dreux.fr', 'technique@dreux.fr'],
+        }],
+      })
+
+    expect(res.status).toBe(200)
+
+    // Check that the upsert received the service fields
+    expect(upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          service_name:   'Service Voirie',
+          service_emails: ['voirie@dreux.fr', 'technique@dreux.fr'],
+        }),
+      ]),
+      expect.anything()
+    )
+  })
+
+  it('upserts with empty service_emails array when not provided', async () => {
+    const upsertResult = [{ id: 'cat-1', slug: 'voirie', label: 'Voirie', service_emails: [] }]
+    const select = vi.fn().mockResolvedValue({ data: upsertResult, error: null })
+    const upsert = vi.fn().mockReturnValue({ select })
+    vi.mocked(supabaseAdmin.from).mockReturnValue({ upsert } as any)
+
+    const res = await request(makeApp())
+      .put('/api/tenant/categories')
+      .send({ categories: [{ slug: 'voirie', label: 'Voirie', icon: '🛣️', color: '#EF4444' }] })
+
+    expect(res.status).toBe(200)
+
+    // service_emails should default to empty array
+    expect(upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ service_emails: [] }),
+      ]),
+      expect.anything()
+    )
+  })
 })
 
 describe('POST /api/tenant/users/invite', () => {
