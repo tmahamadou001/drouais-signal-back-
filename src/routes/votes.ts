@@ -7,7 +7,7 @@ import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
 
 const router: ExpressRouter = Router()
 
-router.post('/:id/vote', voteLimiter, verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/vote', verifyToken, voteLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const reportId = req.params.id
     const userId = req.userId!
@@ -43,7 +43,7 @@ router.post('/:id/vote', voteLimiter, verifyToken, async (req: Request, res: Res
   }
 })
 
-router.delete('/:id/vote', voteLimiter, verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id/vote', verifyToken, voteLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const reportId = req.params.id
     const userId = req.userId
@@ -77,7 +77,7 @@ router.delete('/:id/vote', voteLimiter, verifyToken, async (req: Request, res: R
   }
 })
 
-router.get('/:id/my-vote', voteReadLimiter, verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id/my-vote', verifyToken, voteReadLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const reportId = req.params.id
 

@@ -130,11 +130,17 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 })
 
 // ─── POST /api/reports — Create a new report (authenticated or anonymous) ───
-router.post('/', createReportLimiter, requireTrustedOrigin, verifyTokenOptional, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', verifyTokenOptional, createReportLimiter, requireTrustedOrigin, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { title, category, description, lat, lng, address_approx, anonymous_email } = req.body
     const ai_assisted = req.body.ai_assisted === 'true' || req.body.ai_assisted === true
-    const isAnonymous = !req.userId
+
+    // A Supabase anonymous sign-in is proof the request came from the app, not
+    // an identity (see middleware/trustedOrigin.ts). Such a citizen gets the
+    // same treatment as one with no token at all: a follow-up token, and no
+    // `user_id` linking a report to a throwaway account they cannot sign back
+    // into if the install is wiped.
+    const isAnonymous = !req.userId || req.isAnonymousUser === true
 
     const anonymousToken = isAnonymous ? crypto.randomBytes(32).toString('hex') : null
 
@@ -213,7 +219,7 @@ router.post('/', createReportLimiter, requireTrustedOrigin, verifyTokenOptional,
         lng: parseFloat(lng),
         address_approx: address_approx?.trim() || null,
         status: 'en_attente',
-        user_id: req.userId || null,
+        user_id: isAnonymous ? null : req.userId,
         is_anonymous: isAnonymous,
         anonymous_token: anonymousToken,
         anonymous_email: isAnonymous && anonymous_email ? anonymous_email.trim() : null,
@@ -232,7 +238,10 @@ router.post('/', createReportLimiter, requireTrustedOrigin, verifyTokenOptional,
     })
 
     createAuditLog({
-      userId: req.userId ?? undefined,
+      // Same reasoning as the insert above: an anonymous sign-in is not an
+      // author. Passing its id would send `enrichUserData` looking up a
+      // throwaway account with no e-mail and no tenant role.
+      userId: isAnonymous ? undefined : req.userId,
       action: 'report.created',
       entityType: 'report',
       entityId: data.id,

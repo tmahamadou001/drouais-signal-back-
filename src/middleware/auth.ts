@@ -9,6 +9,15 @@ declare global {
       userId?: string
       userEmail?: string
       userRole?: string
+      /**
+       * True when the token belongs to a Supabase *anonymous* sign-in.
+       *
+       * The mobile app signs in anonymously so its requests carry a real,
+       * server-verifiable token instead of a spoofable `Origin` header. That
+       * token proves the request came from the app — it is not an identity, and
+       * routes must keep treating such a user as an anonymous citizen.
+       */
+      isAnonymousUser?: boolean
     }
   }
 }
@@ -69,6 +78,7 @@ export const verifyTokenOptional = async (req: Request, res: Response, next: Nex
     req.userId = data.user.id
     req.userEmail = data.user.email
     req.userRole = data.user.app_metadata?.role || 'citizen'
+    req.isAnonymousUser = data.user.is_anonymous ?? false
 
     next()
   } catch (err) {
