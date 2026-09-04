@@ -1,3 +1,4 @@
+import { logoImg } from './brand.js'
 export interface ServiceNotificationParams {
   recipientEmails: string[]
   serviceName: string
@@ -42,11 +43,7 @@ export function buildServiceNotificationEmail(params: ServiceNotificationParams)
     <!-- Header -->
     <div style="background: #1A56A0; border-radius: 16px 16px 0 0; padding: 24px 28px;">
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 4px;">
-        <div style="width: 32px; height: 32px; background: rgba(255,255,255,0.15); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
-          <svg viewBox="0 0 20 20" width="18" height="18" fill="white">
-            <path d="M10 2 L17 5.5 V11 C17 15.5 14 19 10 20 C6 19 3 15.5 3 11 V5.5 Z" />
-          </svg>
-        </div>
+        ${logoImg(32)}
         <span style="color: rgba(255,255,255,0.7); font-size: 13px; font-weight: 500;">OnSignale — ${cityName}</span>
       </div>
       <h1 style="color: white; font-size: 18px; font-weight: 700; margin: 8px 0 0;">

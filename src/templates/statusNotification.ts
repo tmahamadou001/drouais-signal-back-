@@ -1,3 +1,4 @@
+import { logoImg } from './brand.js'
 const COLORS = {
   primary: '#1A56A0',
   success: '#1D9E75',
@@ -90,7 +91,12 @@ export const buildStatusEmail = (params: StatusEmailParams): string => {
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                 <tr>
                   <td style="text-align: left;">
-                    <span style="font-size: 24px; font-weight: 700; color: ${COLORS.white};">🔔 OnSignale</span>
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                      <tr>
+                        <td style="padding-right: 10px;">${logoImg(32)}</td>
+                        <td><span style="font-size: 24px; font-weight: 700; color: ${COLORS.white};">OnSignale</span></td>
+                      </tr>
+                    </table>
                   </td>
                   <td style="text-align: right;">
                     <span style="font-size: 14px; color: rgba(255, 255, 255, 0.9); font-weight: 500;">${params.cityName ?? 'OnSignale'}</span>

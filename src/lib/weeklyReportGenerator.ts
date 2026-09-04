@@ -1,5 +1,6 @@
 import { supabaseAdmin } from './supabaseAdmin.js'
 import { Resend } from 'resend'
+import { logoImg } from '../templates/brand.js'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -353,7 +354,7 @@ function buildEmailHtml(stats: WeeklyStats, aiText: string): string {
 <div class="container">
 
   <div class="header">
-    <h1>📊 OnSignale</h1>
+    <h1 style="display:flex;align-items:center;justify-content:center;gap:10px;">${logoImg(36)}OnSignale</h1>
     <p>Résumé hebdomadaire — Semaine du ${stats.period.from} au ${stats.period.to}</p>
   </div>
 
