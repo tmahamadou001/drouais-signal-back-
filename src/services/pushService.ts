@@ -72,13 +72,28 @@ async function send(messages: PushMessage[]): Promise<void> {
   }
 }
 
-/** Every device the citizen has registered for this commune. */
-async function tokensFor(userId: string, tenantId: string): Promise<string[]> {
+/** The switches offered on the profile screen, one per kind of push. */
+type NotificationKind = 'notify_status' | 'notify_comment'
+
+/**
+ * Every device the citizen has registered for this commune, minus the ones
+ * that opted out of this kind of notification.
+ *
+ * Filtered in the query rather than after it: an opted-out citizen should cost
+ * us nothing, and a `false` here is the only thing standing between them and a
+ * phone buzzing at 7am about a pothole they stopped caring about.
+ */
+async function tokensFor(
+  userId: string,
+  tenantId: string,
+  kind: NotificationKind
+): Promise<string[]> {
   const { data, error } = await supabaseAdmin
     .from('device_tokens')
     .select('token')
     .eq('user_id', userId)
     .eq('tenant_id', tenantId)
+    .eq(kind, true)
 
   if (error) {
     console.error('[Push] Lecture des tokens impossible:', error.message)
@@ -106,7 +121,7 @@ export async function pushStatusChange(params: {
   // worth waking a phone for.
   if (!title) return
 
-  const tokens = await tokensFor(params.userId, params.tenantId)
+  const tokens = await tokensFor(params.userId, params.tenantId, 'notify_status')
 
   await send(
     tokens.map((to) => ({
@@ -127,7 +142,7 @@ export async function pushAgentComment(params: {
   reportTitle: string
   excerpt: string
 }): Promise<void> {
-  const tokens = await tokensFor(params.userId, params.tenantId)
+  const tokens = await tokensFor(params.userId, params.tenantId, 'notify_comment')
 
   await send(
     tokens.map((to) => ({

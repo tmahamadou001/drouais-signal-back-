@@ -49,6 +49,76 @@ router.post('/', verifyToken, requireTenant, async (req: Request, res: Response,
 })
 
 /**
+ * ─── GET /api/devices/preferences — What this citizen agreed to receive ───
+ *
+ * Answers for the account rather than for one install: the switches live on the
+ * profile screen, which is account-scoped, so a citizen who silences status
+ * updates on their phone expects their tablet to fall silent too.
+ *
+ * Defaults to both on when no device is registered yet — that is what a fresh
+ * install will get, and showing the switches off would misdescribe it.
+ */
+router.get('/preferences', verifyToken, requireTenant, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('device_tokens')
+      .select('notify_status, notify_comment')
+      .eq('user_id', req.userId!)
+      .eq('tenant_id', req.tenant!.id)
+      .limit(1)
+      .maybeSingle()
+
+    if (error) throw error
+
+    res.json({
+      notify_status: data?.notify_status ?? true,
+      notify_comment: data?.notify_comment ?? true,
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
+ * ─── PATCH /api/devices/preferences — Change what gets sent ───
+ *
+ * Applied to every one of the caller's devices in this commune, for the same
+ * reason the read is account-scoped. Absent fields are left alone, so the two
+ * switches can be flipped independently without either overwriting the other.
+ */
+router.patch('/preferences', verifyToken, requireTenant, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = req.body as { notify_status?: unknown; notify_comment?: unknown }
+    const patch: Record<string, boolean> = {}
+
+    for (const key of ['notify_status', 'notify_comment'] as const) {
+      const value = body[key]
+      if (value === undefined) continue
+      if (typeof value !== 'boolean') throw badRequest(`${key} doit être un booléen.`)
+      patch[key] = value
+    }
+
+    if (Object.keys(patch).length === 0) {
+      throw badRequest('Aucune préférence à modifier.')
+    }
+
+    const { error } = await supabaseAdmin
+      .from('device_tokens')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('user_id', req.userId!)
+      .eq('tenant_id', req.tenant!.id)
+
+    if (error) throw error
+
+    // No row yet simply means push has not been registered on this device;
+    // the preference is stored the moment it is, from the defaults.
+    res.status(204).end()
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
  * ─── DELETE /api/devices/:token — Stop pushing to this install ───
  *
  * Called on sign-out. Scoped to the caller so one account cannot unregister
