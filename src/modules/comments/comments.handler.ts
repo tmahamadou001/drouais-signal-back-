@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
+import { pushAgentComment } from '../../services/pushService.js'
 import { sendCommentNotification } from './comments.email.js'
 import { AppError, notFound, forbidden } from '../../middleware/errorHandler.js'
 import { getAuthUserEmail } from '../../lib/authHelpers.js'
@@ -162,6 +163,18 @@ export async function createAgentComment(
 
     if (error || !comment) throw error ?? new AppError(500, 'internal_error', 'Erreur création commentaire.')
 
+    // Independent of the e-mail: the citizen may have no address on file, and a
+    // reply they never see is the failure this whole thread exists to avoid.
+    if (report.user_id) {
+      pushAgentComment({
+        userId: report.user_id,
+        tenantId: req.tenant.id,
+        reportId,
+        reportTitle: report.title,
+        excerpt: content.trim(),
+      }).catch(err => console.error('[Comments] Erreur push:', err))
+    }
+
     if (citizenEmail) {
       await sendCommentNotification({
         to: citizenEmail,
@@ -285,6 +298,59 @@ export async function getUnreadCount(
     })
 
     res.json({ total: data?.length ?? 0, byReport: counts })
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * Unread agent replies, for the signed-in citizen.
+ *
+ * `getUnreadCount` above answers the same question for an agent and is gated on
+ * `requireTenantAdmin`, so a citizen app cannot use it — and should not: it
+ * counts across the whole commune. This one is scoped to the caller's own
+ * reports, which is the only thing a citizen may know about.
+ *
+ * Returns a per-report map as well as a total, so a list can badge individual
+ * rows without a request each.
+ */
+export async function getMyUnreadCount(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    if (!req.tenant) throw notFound('Tenant')
+
+    const { data: myReports } = await supabaseAdmin
+      .from('reports')
+      .select('id')
+      .eq('user_id', req.userId!)
+      .eq('tenant_id', req.tenant.id)
+
+    const reportIds = (myReports ?? []).map((report) => report.id)
+
+    if (reportIds.length === 0) {
+      res.json({ total: 0, byReport: {} })
+      return
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('report_comments')
+      .select('report_id')
+      .in('report_id', reportIds)
+      .eq('tenant_id', req.tenant.id)
+      .eq('author_type', 'agent')
+      .eq('read_by_citizen', false)
+
+    if (error) throw error
+
+    const byReport: Record<string, number> = {}
+    for (const row of data ?? []) {
+      byReport[row.report_id] = (byReport[row.report_id] ?? 0) + 1
+    }
+
+    res.json({ total: data?.length ?? 0, byReport })
   } catch (err) {
     next(err)
   }

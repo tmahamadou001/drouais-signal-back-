@@ -22,7 +22,7 @@ router.get('/public', async (_req: Request, res: Response, next: NextFunction) =
   try {
     const { data, error } = await supabaseAdmin
       .from('tenants')
-      .select('slug, name, tenant_configs(city_name, department_code, city_population, logo_url)')
+      .select('slug, name, tenant_configs(city_name, department_code, city_population, logo_url, map_lat, map_lng)')
       // Suspended communes are excluded: listing one would let a citizen pick
       // it and then hit a 403 wall on the very next request.
       .in('status', ['active', 'trial', 'demo'])
@@ -45,6 +45,12 @@ router.get('/public', async (_req: Request, res: Response, next: NextFunction) =
         department_code: config?.department_code ?? null,
         city_population: config?.city_population ?? null,
         logo_url: config?.logo_url ?? null,
+        // The mobile app offers the nearest commune at first launch. Comparing
+        // a GPS fix to a town-hall coordinate is far more reliable than
+        // matching a reverse-geocoded city name against `city_name`, which
+        // differs on accents, hyphens and "Ville de" prefixes.
+        map_lat: config?.map_lat ?? null,
+        map_lng: config?.map_lng ?? null,
       }
     })
 

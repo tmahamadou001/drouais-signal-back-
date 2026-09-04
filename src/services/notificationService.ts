@@ -4,6 +4,7 @@ import { buildStatusEmail } from '../templates/statusNotification.js'
 import { buildServiceNotificationEmail } from '../templates/serviceNotification.js'
 import { getAuthUserEmail } from '../lib/authHelpers.js'
 import { auditReportServiceNotified } from './auditService.js'
+import { pushStatusChange } from './pushService.js'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -50,6 +51,18 @@ export async function sendStatusChangeNotification(
       .eq('id', params.reportId)
       .single()
     recipientEmail = data?.anonymous_email ?? null
+  }
+
+  // Push first, and independently of the e-mail: a citizen with the app and no
+  // address on file should still hear about their own report.
+  if (params.userId && params.tenantId) {
+    pushStatusChange({
+      userId: params.userId,
+      tenantId: params.tenantId,
+      reportId: params.reportId,
+      reportTitle: params.reportTitle,
+      newStatus: params.newStatus,
+    }).catch(err => console.error('[Notification] Erreur push:', err))
   }
 
   if (!recipientEmail) {

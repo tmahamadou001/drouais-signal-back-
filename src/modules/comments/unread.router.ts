@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { getUnreadCount } from './comments.handler.js'
+import { getUnreadCount, getMyUnreadCount } from './comments.handler.js'
 import { verifyToken } from '../../middleware/auth.js'
 import { requireTenantAdmin } from '../../middleware/roleGuard.js'
 
@@ -12,6 +12,14 @@ router.get(
   verifyToken,
   requireTenantAdmin,
   getUnreadCount
+)
+
+// GET /api/comments/unread/mine
+// → Citoyen connecté : ses propres signalements uniquement
+router.get(
+  '/unread/mine',
+  verifyToken,
+  getMyUnreadCount
 )
 
 export default router

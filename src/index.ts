@@ -19,6 +19,7 @@ import heatmapRouter from './routes/heatmap.js'
 import weeklyReportRouter from './routes/weeklyReport.js'
 import tenantRouter from './routes/tenant.js'
 import tenantsRouter from './routes/tenants.js'
+import devicesRouter from './routes/devices.js'
 import commentsRouter from './modules/comments/comments.router.js'
 import unreadCommentsRouter from './modules/comments/unread.router.js'
 import uploadRouter from './routes/upload.js'
@@ -101,6 +102,7 @@ app.use('/api/map', mapRouter)
 app.use('/api/tenant', tenantRouter)
 // Public commune directory — no slug, no auth. Mobile only (see routes/tenants.ts).
 app.use('/api/tenants', tenantsRouter)
+app.use('/api/devices', devicesRouter)
 
 // Routes admin avec slow down progressif
 app.use('/api/admin', adminSlowDown)
