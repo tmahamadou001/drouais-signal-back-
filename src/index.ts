@@ -25,7 +25,7 @@ import unreadCommentsRouter from './modules/comments/unread.router.js'
 import uploadRouter from './routes/upload.js'
 import auditRouter from './routes/audit.js'
 import authRouter from './routes/auth.js'
-import { resolveTenant } from './middleware/tenantResolver.js'
+import { resolveTenant, requireTenant } from './middleware/tenantResolver.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import compression from 'compression'
 import './cron/weeklyReport.js'
@@ -90,6 +90,32 @@ app.use('/api/', globalApiLimiter)
 app.use('/api/', resolveTenant)
 
 // ─── Routes ───
+/**
+ * Every route below `/api/` that reads commune data requires a resolved tenant.
+ *
+ * Each handler filtered with `if (req.tenant?.id) query.eq('tenant_id', …)`,
+ * which silently returned **every commune's rows** when no slug reached the
+ * server. The web front always sends `X-Tenant-Slug`, so it never showed —
+ * until the mobile app, whose first launch has no commune yet, listed 35
+ * reports from four towns at once.
+ *
+ * Enforced here rather than in each handler: a conditional filter is the kind
+ * of thing the next endpoint forgets, and forgetting it leaks by default. This
+ * way a missing slug is a 400 everywhere, and the failure mode of an oversight
+ * becomes "no data" instead of "everyone's data".
+ *
+ * `/api/tenants/public` and `/api/auth` are mounted outside this guard: the
+ * first is the commune directory the app reads *before* it has a slug, the
+ * second handles password reset where the slug is optional.
+ */
+app.use('/api/reports', requireTenant)
+app.use('/api/comments', requireTenant)
+app.use('/api/upload', requireTenant)
+app.use('/api/analyze-photo', requireTenant)
+app.use('/api/map', requireTenant)
+app.use('/api/admin', requireTenant)
+app.use('/api/audit', requireTenant)
+
 // Routes publiques avec rate limiting spécifique
 app.use('/api/reports', reportsRouter)
 app.use('/api/reports', duplicateCheckLimiter, duplicatesRouter)
