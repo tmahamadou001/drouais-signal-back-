@@ -13,7 +13,15 @@ const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 })
 
-const categories = ['voirie', 'eclairage', 'dechets', 'autre'] as const
+/**
+ * Les slugs sont ceux de la **taxonomie nationale** (migration 026).
+ *
+ * Ils portaient encore les slugs locaux d'avant — `eclairage`, `dechets` — que
+ * `reports.category` ne connaît plus : les jeux de test entraient donc des
+ * signalements dont aucune catégorie ne retrouvait le libellé, et les écrans de
+ * performance les comptaient à zéro.
+ */
+const categories = ['voirie', 'mobilier', 'proprete', 'autre'] as const
 const statuses = ['en_attente', 'pris_en_charge', 'resolu'] as const
 
 const titles = {

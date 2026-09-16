@@ -1,13 +1,22 @@
 import { Router, Request, Response, NextFunction, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken, verifyTokenOptional } from '../middleware/auth.js'
-import { requireTrustedOrigin } from '../middleware/trustedOrigin.js'
-import { createReportSchema, updateReportSchema, paginationSchema } from '../schemas/report.schema.js'
+import { resolve as resolveLocation, isPlausiblePosition } from '../services/geoRouting.js'
+import { ensureProspectTenant } from '../services/prospectService.js'
+import { resolveCategories, resolveCategory } from '../services/categoryService.js'
+import { readLimit } from '../lib/pagination.js'
+import { removePhoto } from '../lib/photoStorage.js'
+import { resolveCitizenContact } from '../lib/citizenContact.js'
+import { ownsReport } from '../lib/reportOwnership.js'
+import { applyReportFilters, overdueFilter, readReportFilters, sortColumns } from '../lib/reportFilters.js'
+import { createReportSchema, updateReportSchema, paginationSchema, transmitReportSchema, bulkTransmitSchema } from '../schemas/report.schema.js'
+import { transmitReport, transmitReports } from '../services/transmitService.js'
+import { isFinal, isRollback } from '../lib/statusFlow.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
 import { sendStatusChangeNotification, sendServiceNotification } from '../services/notificationService.js'
-import { requireTenantAdmin } from '../middleware/roleGuard.js'
+import { requireTenantAdmin, requireAgent } from '../middleware/roleGuard.js'
 import { auditReportStatusChanged, auditReportDeleted, auditReportBulkDeleted, createAuditLog } from '../services/auditService.js'
 import { createReportLimiter } from '../middleware/rateLimits.js'
 import { AppError, notFound, badRequest, forbidden } from '../middleware/errorHandler.js'
@@ -15,32 +24,62 @@ import { AppError, notFound, badRequest, forbidden } from '../middleware/errorHa
 const router: ExpressRouter = Router()
 
 // ─── GET /api/reports — Public list of all reports with pagination ───
+/**
+ * Les colonnes de la liste, typées `string` et non littéral.
+ *
+ * `supabase-js` analyse la chaîne de `select()` pour en déduire le type des
+ * lignes. Avec les filtres génériques par-dessus, l'inférence explose
+ * (« Type instantiation is excessively deep »). Élargir le type ici coûte le
+ * typage des lignes de cette requête — que le client ne consomme de toute façon
+ * qu'à travers son propre type `Report`.
+ */
+const LIST_COLUMNS: string =
+  'id, reference, title, category, status, created_at, address_approx, lat, lng, photo_url, description, vote_count'
+
 router.get('/', validate(paginationSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const page = parseInt(req.query.page as string) || 1
-    const limit = parseInt(req.query.limit as string) || 20
+    const limit = readLimit(req.query.limit)
     const offset = (page - 1) * limit
     const tenantId = req.tenant?.id
+    const filters = readReportFilters(req.query as Record<string, unknown>)
 
-    const statusFilter = req.query.status as string | undefined
-    const categoryFilter = req.query.category as string | undefined
+    /**
+     * La liste publique ne montre que ce qui est publié.
+     *
+     * Un signalement reçu en commune prospect reste lisible par son auteur —
+     * `/mine`, et le détail par identifiant — mais n'apparaît ni ici ni sur la
+     * carte. Publier l'inventaire des dégradations d'une mairie qui n'a rien
+     * demandé serait une démarche commerciale hostile.
+     */
+    // Calculées une fois, partagées par les deux requêtes : elles dépendent de
+    // l'heure, et deux appels séparés donneraient deux instants différents.
+    const overdueClauses = filters.overdue ? await overdueFilter(tenantId) : ''
 
-    let countQuery = supabaseAdmin.from('reports').select('*', { count: 'exact', head: true })
-    if (tenantId) countQuery = countQuery.eq('tenant_id', tenantId)
-    if (statusFilter && statusFilter !== 'all') countQuery = countQuery.eq('status', statusFilter)
-    if (categoryFilter && categoryFilter !== 'all') countQuery = countQuery.eq('category', categoryFilter)
+    const countQuery = applyReportFilters(
+      supabaseAdmin.from('reports').select('*', { count: 'exact', head: true }).eq('is_published', true),
+      filters,
+      tenantId,
+      overdueClauses
+    )
 
     const { count, error: countError } = await countQuery
     if (countError) throw countError
 
-    let dataQuery = supabaseAdmin
-      .from('reports')
-      .select('id, title, category, status, created_at, address_approx, lat, lng, photo_url, description, vote_count')
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1)
-    if (tenantId) dataQuery = dataQuery.eq('tenant_id', tenantId)
-    if (statusFilter && statusFilter !== 'all') dataQuery = dataQuery.eq('status', statusFilter)
-    if (categoryFilter && categoryFilter !== 'all') dataQuery = dataQuery.eq('category', categoryFilter)
+    let dataQuery = applyReportFilters(
+      supabaseAdmin
+        .from('reports')
+        .select(LIST_COLUMNS)
+        .eq('is_published', true),
+      filters,
+      tenantId,
+      overdueClauses
+    )
+
+    for (const { column, ascending } of sortColumns(filters.sort)) {
+      dataQuery = dataQuery.order(column, { ascending })
+    }
+    dataQuery = dataQuery.range(offset, offset + limit - 1)
 
     const { data, error } = await dataQuery
     if (error) throw error
@@ -60,17 +99,27 @@ router.get('/', validate(paginationSchema), async (req: Request, res: Response, 
 })
 
 // ─── GET /api/reports/mine — Reports of the logged-in user ───
+/**
+ * Les signalements de l'appelant — **toutes communes confondues**.
+ *
+ * Ils étaient filtrés par `X-Tenant-Slug`, c'est-à-dire par la commune où se
+ * trouve le téléphone *maintenant*. Un habitant de Dreux qui passe à La Loupe
+ * voyait donc « Mes signalements » se vider : le trou devant chez lui avait
+ * disparu, et il ne pouvait plus savoir s'il avait été réparé.
+ *
+ * L'en-tête de commune cadre les **listes publiques** — « ce qui est signalé
+ * ici ». Il n'a rien à dire de ce qui appartient à l'appelant : ses
+ * signalements sont les siens où qu'il se trouve, et son adresse ne change pas
+ * quand il se déplace.
+ */
 router.get('/mine', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    let query = supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('reports')
       .select('*')
       .eq('user_id', req.userId!)
       .order('created_at', { ascending: false })
 
-    if (req.tenant?.id) query = query.eq('tenant_id', req.tenant.id)
-
-    const { data, error } = await query
     if (error) throw error
     res.json(data)
   } catch (err) {
@@ -83,15 +132,21 @@ router.get('/anonymous/:token', async (req: Request, res: Response, next: NextFu
   try {
     const { token } = req.params
 
-    let reportQuery = supabaseAdmin
+    /**
+     * Pas de filtre de commune : **le jeton est la preuve**, et il ne vaut que
+     * pour ce signalement.
+     *
+     * Ce lien voyage dans un e-mail de suivi, donc il est ouvert depuis
+     * n'importe où — un bureau, un train, une autre commune. Le croiser avec
+     * la commune détectée du moment rendait le lien mort exactement là où il
+     * sert : loin de chez soi.
+     */
+    const reportResult = await supabaseAdmin
       .from('reports')
-      .select('id, title, category, status, created_at, address_approx, lat, lng, photo_url')
+      .select('id, reference, title, category, status, created_at, address_approx, lat, lng, photo_url')
       .eq('anonymous_token', token)
       .eq('is_anonymous', true)
-
-    if (req.tenant?.id) reportQuery = reportQuery.eq('tenant_id', req.tenant.id)
-
-    const reportResult = await reportQuery.single()
+      .single()
 
     if (reportResult.error) throw notFound('Signalement')
 
@@ -101,16 +156,80 @@ router.get('/anonymous/:token', async (req: Request, res: Response, next: NextFu
   }
 })
 
+/**
+ * Les adresses que la commune connaît déjà.
+ *
+ * Deux sources, parce qu'un agent pense en termes de « la régie », pas en
+ * termes de table : celles configurées sur ses catégories, et celles à qui elle
+ * a déjà transmis. Proposer une liste évite de retaper une adresse — et une
+ * adresse retapée est une adresse mal tapée.
+ */
+router.get('/service-recipients', verifyToken, requireAgent, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.tenant?.id
+    if (!tenantId) throw badRequest('Tenant requis.')
+
+    const [categories, handoffs] = await Promise.all([
+      resolveCategories(tenantId),
+      supabaseAdmin
+        .from('service_handoffs')
+        .select('recipient, service_name, created_at')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: false })
+        .limit(200),
+    ])
+
+    const known = new Map<string, { email: string; serviceName: string | null; source: string }>()
+
+    for (const category of categories) {
+      for (const email of category.service_emails ?? []) {
+        if (!known.has(email)) {
+          known.set(email, {
+            email,
+            serviceName: category.service_name ?? null,
+            source: `Catégorie ${category.label}`,
+          })
+        }
+      }
+    }
+
+    for (const handoff of (handoffs.data ?? []) as any[]) {
+      if (!known.has(handoff.recipient)) {
+        known.set(handoff.recipient, {
+          email: handoff.recipient,
+          serviceName: handoff.service_name ?? null,
+          source: 'Déjà utilisée',
+        })
+      }
+    }
+
+    res.json({ recipients: [...known.values()] })
+  } catch (err) {
+    next(err)
+  }
+})
+
 // ─── GET /api/reports/:id — Single report with history ───
-router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
+// `verifyTokenOptional` : la route reste ouverte, mais si un jeton est présent
+// on sait qui appelle — et c'est ce qui permet à l'auteur d'un signalement non
+// publié de lire le sien. Sans lui, `req.userId` est toujours vide et seul le
+// jeton de suivi `X-Report-Token` ferait preuve.
+router.get('/:id', verifyTokenOptional, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params
 
-    let reportQuery = supabaseAdmin.from('reports').select('*').eq('id', id)
-    if (req.tenant?.id) reportQuery = reportQuery.eq('tenant_id', req.tenant.id)
-
+    /**
+     * Le détail se lit sans filtre de commune, et se referme sur la
+     * publication.
+     *
+     * Le filtre par `X-Tenant-Slug` rendait introuvable, depuis une autre
+     * commune, un signalement pourtant public — y compris le sien, y compris
+     * celui qu'une notification venait d'annoncer résolu. Ce n'est pas la
+     * commune du téléphone qui décide de ce qui est lisible : c'est la
+     * publication, plus bas.
+     */
     const [reportResult, historyResult] = await Promise.all([
-      reportQuery.single(),
+      supabaseAdmin.from('reports').select('*').eq('id', id).single(),
       supabaseAdmin
         .from('status_history')
         .select('*')
@@ -120,9 +239,38 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     if (reportResult.error) throw notFound('Signalement')
 
+    /**
+     * Un signalement non publié n'est lisible que par son auteur.
+     *
+     * `is_published` est faux pour les communes prospects : leurs signalements
+     * sont collectés sans que la mairie ait rien demandé, et publier
+     * l'inventaire des dégradations d'une commune qui n'a rien demandé serait
+     * une démarche commerciale hostile. La liste et la carte les écartaient
+     * déjà ; **cette route ne les écartait pas** — le filtre de commune y
+     * tenait lieu de protection, par accident, et il vient de tomber.
+     *
+     * Son auteur, lui, y a toujours droit : par son compte, ou par le jeton de
+     * suivi que le serveur lui a remis une fois.
+     */
+    if (!reportResult.data.is_published && !ownsReport(req, reportResult.data)) {
+      throw notFound('Signalement')
+    }
+
+    /**
+     * Comment joindre l'auteur — calculé ici, pas deviné par le client.
+     *
+     * Un agent qui écrit à un signalement déposé sans compte et sans adresse
+     * écrit dans le vide : rien ne part, et il n'a aucun moyen de le savoir.
+     * L'écran a besoin de le lui dire, donc la règle remonte avec le
+     * signalement. L'adresse elle-même n'y est pas : le back-office affiche
+     * qu'un contact existe, pas lequel.
+     */
+    const contact = await resolveCitizenContact(reportResult.data)
+
     res.json({
       report: reportResult.data,
       history: historyResult.data || [],
+      contact: { channel: contact.channel, reachable: contact.reachable },
     })
   } catch (err) {
     next(err)
@@ -130,56 +278,115 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 })
 
 // ─── POST /api/reports — Create a new report (authenticated or anonymous) ───
-router.post('/', verifyTokenOptional, createReportLimiter, requireTrustedOrigin, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', verifyTokenOptional, createReportLimiter, upload.single('photo'), validate(createReportSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, category, description, lat, lng, address_approx, anonymous_email } = req.body
+    const { title, category, description, lat, lng, address_approx, anonymous_email,
+            position_accuracy, position_captured_at } = req.body
     const ai_assisted = req.body.ai_assisted === 'true' || req.body.ai_assisted === true
 
-    // A Supabase anonymous sign-in is proof the request came from the app, not
-    // an identity (see middleware/trustedOrigin.ts). Such a citizen gets the
-    // same treatment as one with no token at all: a follow-up token, and no
-    // `user_id` linking a report to a throwaway account they cannot sign back
-    // into if the install is wiped.
+    /**
+     * Une session anonyme Supabase n'est pas une identité.
+     *
+     * Elle servait de « preuve d'application » à `requireTrustedOrigin`, guard
+     * retiré depuis : n'importe qui pouvait en obtenir une, et son seul effet
+     * réel était de rendre le parcours sans compte dépendant d'un réglage du
+     * tableau de bord Supabase. Il n'en reste qu'un usage légitime — servir de
+     * seau de rate limiting par installation (`middleware/rateLimits.ts`).
+     *
+     * Un tel citoyen est donc traité comme un appelant sans jeton : un jeton de
+     * suivi, et aucun `user_id` rattachant le signalement à un compte jetable
+     * dans lequel il ne pourra jamais se reconnecter.
+     */
     const isAnonymous = !req.userId || req.isAnonymousUser === true
 
     const anonymousToken = isAnonymous ? crypto.randomBytes(32).toString('hex') : null
 
-    if (!req.tenant) throw badRequest('Tenant requis pour créer un signalement.')
-
-    // Valider la catégorie contre les catégories actives du tenant
-    const { data: validCategories } = await supabaseAdmin
-      .from('tenant_categories')
-      .select('slug')
-      .eq('tenant_id', req.tenant.id)
-      .eq('is_active', true)
-    if (validCategories && validCategories.length > 0) {
-      const validSlugs = validCategories.map(c => c.slug)
-      if (!validSlugs.includes(category)) {
-        throw badRequest(`Catégorie invalide : "${category}"`)
-      }
+    /**
+     * ─── Le tenant est dérivé de la position, jamais annoncé par le client ───
+     *
+     * `X-Tenant-Slug` est délibérément ignoré ici. Ce n'est pas une simple
+     * dépriorisation : un repli sur l'en-tête quand le géocodage échoue serait
+     * un contournement complet — il suffirait d'envoyer une coordonnée
+     * irrésoluble pour reprendre la main sur le tenant. Or `tenant_id` décide
+     * de qui voit la donnée, qui la traite, et demain de ce qu'on facture.
+     *
+     * L'en-tête reste légitime en lecture, où il ne fait que cadrer la requête.
+     * Il perd toute autorité en écriture.
+     */
+    if (!isPlausiblePosition(lat, lng)) {
+      throw badRequest('La position transmise est invalide.')
     }
 
-    // Valider que les coordonnées sont dans le périmètre du tenant
-    const { data: tenantConfig } = await supabaseAdmin
-      .from('tenant_configs')
-      .select('map_lat, map_lng, map_radius_km')
-      .eq('tenant_id', req.tenant.id)
-      .single()
+    const location = await resolveLocation(lat, lng)
 
-    if (tenantConfig?.map_lat && tenantConfig?.map_lng) {
-      const reportLat = parseFloat(lat)
-      const reportLng = parseFloat(lng)
-      const radiusKm = tenantConfig.map_radius_km ?? 15
+    // Échec fermé. Sans commune il n'y a pas de tenant, et `tenant_id` est NOT
+    // NULL : rien ne peut porter ce signalement. Le client réessaiera — cette
+    // résilience appartient à sa file d'attente hors ligne, pas à un état
+    // intermédiaire en base.
+    if (!location) {
+      throw new AppError(
+        503,
+        'geocoding_unavailable',
+        'Impossible de localiser votre commune pour le moment. Réessayez dans un instant.'
+      )
+    }
 
-      const R = 6371
-      const dLat = (reportLat - tenantConfig.map_lat) * Math.PI / 180
-      const dLng = (reportLng - tenantConfig.map_lng) * Math.PI / 180
-      const a = Math.sin(dLat / 2) ** 2
-        + Math.cos(tenantConfig.map_lat * Math.PI / 180) * Math.cos(reportLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
-      const distanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    /**
+     * Commune identifiée mais pas encore partenaire.
+     *
+     * Le signalement est accueilli — l'app a prévenu le citoyen avant qu'il
+     * envoie, et il a choisi de continuer. Il atterrit dans un tenant prospect
+     * et n'est pas publié : ni dans la liste publique, ni sur la carte. Son
+     * auteur seul le voit.
+     *
+     * Le refuser ici ferait perdre la seule chose qui convaincra cette mairie
+     * de rejoindre la plateforme — la preuve que ses habitants signalent déjà.
+     */
+    const tenant = location.tenant
+      ?? (await ensureProspectTenant(location.inseeCode, location.communeName))
 
-      if (distanceKm > radiusKm) {
-        throw new AppError(422, 'out_of_bounds', `La position est en dehors de la zone autorisée (rayon : ${radiusKm} km).`)
+    if (!tenant) {
+      // La création a échoué : rien ne peut porter ce signalement.
+      throw new AppError(
+        503,
+        'tenant_unavailable',
+        'Impossible d’enregistrer votre signalement pour le moment. Réessayez dans un instant.'
+      )
+    }
+
+    /**
+     * La couverture se lit sur le **statut** du tenant, pas sur son existence.
+     *
+     * Elle se déduisait de `location.tenant !== null`, ce qui n'était juste que
+     * pour le tout premier signalement d'une commune : le suivant retrouvait le
+     * tenant prospect créé par le précédent, concluait « couverte », et
+     * publiait. L'inventaire des dégradations d'une mairie qui n'a rien demandé
+     * devenait public à partir du deuxième habitant — précisément ce que le
+     * dispositif prospect existe pour éviter.
+     */
+    const covered = tenant.status !== 'prospect'
+
+    /**
+     * La catégorie est validée contre la liste **nationale**, pas contre celle
+     * du tenant.
+     *
+     * `reports.category` porte désormais un slug canonique : c'est ce qui rend
+     * comparables deux signalements de deux communes et mesurable la justesse
+     * de l'IA. La commune ne décide plus de ce qui existe, seulement de ce
+     * qu'elle traite — d'où le second filtre, sur ce qu'elle a désactivé.
+     *
+     * Un tenant prospect n'a aucune ligne de configuration : la liste nationale
+     * s'applique alors telle quelle, ce qui est exactement le comportement
+     * voulu pendant l'amorçage.
+     */
+    const available = await resolveCategories(tenant.id)
+
+    if (available.length > 0) {
+      const match = available.find((item) => item.slug === category)
+
+      if (!match) throw badRequest(`Catégorie invalide : "${category}"`)
+      if (!match.is_active) {
+        throw badRequest(`Cette commune ne traite pas les signalements « ${match.label} ».`)
       }
     }
 
@@ -215,18 +422,32 @@ router.post('/', verifyTokenOptional, createReportLimiter, requireTrustedOrigin,
         category,
         description: description?.trim() || null,
         photo_url,
-        lat: parseFloat(lat),
-        lng: parseFloat(lng),
-        address_approx: address_approx?.trim() || null,
+        lat,
+        lng,
+        // L'adresse de la BAN fait foi sur celle proposée par le client : elle
+        // vient de la même source que le routage, donc les deux ne peuvent pas
+        // se contredire dans le back-office.
+        address_approx: location.addressLabel ?? address_approx?.trim() ?? null,
+        insee_code: location.inseeCode,
+        geo_resolved: true,
+        // Non publié en commune prospect : publier l'inventaire des
+        // dégradations d'une mairie qui n'a rien demandé fermerait le marché
+        // qu'on cherche à ouvrir.
+        is_published: covered,
+        position_accuracy: position_accuracy ?? null,
+        position_captured_at: position_captured_at ?? null,
         status: 'en_attente',
         user_id: isAnonymous ? null : req.userId,
         is_anonymous: isAnonymous,
         anonymous_token: anonymousToken,
         anonymous_email: isAnonymous && anonymous_email ? anonymous_email.trim() : null,
         ai_assisted,
-        tenant_id: req.tenant.id,
+        tenant_id: tenant.id,
       })
-      .select('id, anonymous_token')
+      // `reference` est attribuée par le trigger de la migration 032 : elle
+      // n'existe qu'après l'insertion, et l'application l'affiche aussitôt à
+      // l'habitant comme numéro de suivi.
+      .select('id, reference, anonymous_token')
       .single()
 
     if (error) throw error
@@ -234,7 +455,7 @@ router.post('/', verifyTokenOptional, createReportLimiter, requireTrustedOrigin,
     // Historique initial — RPC garantit l'atomicité même si la connexion coupe après l'insert report
     await supabaseAdmin.rpc('insert_initial_status_history', {
       p_report_id: data.id,
-      p_tenant_id: req.tenant.id,
+      p_tenant_id: tenant.id,
     })
 
     createAuditLog({
@@ -245,8 +466,10 @@ router.post('/', verifyTokenOptional, createReportLimiter, requireTrustedOrigin,
       action: 'report.created',
       entityType: 'report',
       entityId: data.id,
-      tenantId: req.tenant!.id,
-      tenantSlug: req.tenant!.slug,
+      // Le tenant résolu depuis la position, pas celui annoncé par le
+      // client : l'audit doit consigner la décision du serveur.
+      tenantId: tenant.id,
+      tenantSlug: tenant.slug,
       metadata: {
         category,
         is_anonymous: isAnonymous,
@@ -267,11 +490,12 @@ router.post('/', verifyTokenOptional, createReportLimiter, requireTrustedOrigin,
       photoUrl: photo_url || null,
       createdAt: new Date().toISOString(),
       isAnonymous,
-      tenantId: req.tenant!.id,
-      tenantSlug: req.tenant!.slug,
+      tenantId: tenant.id,
+      tenantSlug: tenant.slug,
     }).catch(err => console.error('[ServiceNotif] Erreur:', err))
 
-    const response: { id: string; anonymous_token?: string } = { id: data.id }
+    const response: { id: string; reference: string; anonymous_token?: string } =
+      { id: data.id, reference: data.reference }
     if (isAnonymous) {
       response.anonymous_token = data.anonymous_token
     }
@@ -281,8 +505,94 @@ router.post('/', verifyTokenOptional, createReportLimiter, requireTrustedOrigin,
   }
 })
 
+/**
+ * Transmet un signalement à un service, à la demande d'un agent.
+ *
+ * La transmission n'existait qu'au dépôt, en effet de bord de la création. Trois
+ * situations la rendaient impossible alors qu'elle était légitime : un
+ * destinataire configuré après coup, un agent qui juge que ça relève finalement
+ * de la régie, un premier envoi rebondi.
+ */
+router.post('/:id/transmit', verifyToken, requireAgent, validate(transmitReportSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenant = req.tenant
+    if (!tenant?.id) throw badRequest('Tenant requis.')
+
+    const { recipients, serviceName, remember } = req.body as {
+      recipients?: string[]
+      serviceName?: string
+      remember?: boolean
+    }
+
+    const outcome = await transmitReport(req.params.id, {
+      tenantId: tenant.id,
+      tenantSlug: tenant.slug,
+      recipients,
+      serviceName,
+      remember,
+    })
+
+    if (!outcome.ok) {
+      throw new AppError(
+        outcome.reason === 'Signalement introuvable.' ? 404 : 502,
+        'transmission_failed',
+        outcome.reason ?? 'La transmission a échoué.'
+      )
+    }
+
+    res.json({ recipients: recipients ?? null })
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
+ * Transmet une sélection de signalements au même service.
+ *
+ * Le cas qui l'appelle : une tournée de la régie, sept lampadaires éteints dans
+ * le même quartier. Les ouvrir un à un pour répéter sept fois le même geste
+ * était la seule façon de le faire.
+ *
+ * Pas d'option « enregistrer pour la catégorie » ici, contrairement à la
+ * transmission à l'unité : la sélection couvre souvent plusieurs catégories, et
+ * il n'y a alors aucune réponse honnête à la question de savoir laquelle règle
+ * ce destinataire. Ce réglage se prend sur une fiche, où le contexte existe.
+ *
+ * Rend le détail signalement par signalement : une transmission partielle est
+ * un résultat courant — un signalement déjà résolu, une catégorie sans
+ * destinataire — et l'agent a besoin de savoir lesquels sont partis.
+ */
+router.post('/transmit', verifyToken, requireAgent, validate(bulkTransmitSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenant = req.tenant
+    if (!tenant?.id) throw badRequest('Tenant requis.')
+
+    const { ids, recipients, serviceName } = req.body as {
+      ids: string[]
+      recipients?: string[]
+      serviceName?: string
+    }
+
+    const outcomes = await transmitReports(ids, {
+      tenantId: tenant.id,
+      tenantSlug: tenant.slug,
+      recipients,
+      serviceName,
+    })
+
+    res.json({
+      transmitted: outcomes.filter((outcome) => outcome.ok).map((outcome) => outcome.id),
+      failed: outcomes
+        .filter((outcome) => !outcome.ok)
+        .map(({ id, reference, reason }) => ({ id, reference, reason })),
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
 // ─── PATCH /api/reports/:id/status — Admin: update report status ───
-router.patch('/:id/status', verifyToken, requireTenantAdmin, validate(updateReportSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id/status', verifyToken, requireAgent, validate(updateReportSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params
     const { status, comment } = req.body
@@ -298,6 +608,38 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin, validate(updateRepo
     const oldStatus = currentReport.status
     const tenantId = req.tenant?.id ?? currentReport.tenant_id
 
+    /**
+     * « Résolu » est terminal.
+     *
+     * Clore un signalement prévient l'habitant que c'est fait. Le rouvrir
+     * ensuite ferait de cette annonce quelque chose qu'on reprend, et priverait
+     * les statistiques de résolution de toute valeur — un signalement pourrait
+     * être compté résolu plusieurs fois. Le back-office avertit avant le clic
+     * plutôt que de laisser le découvrir après ; le serveur, lui, refuse, parce
+     * qu'un avertissement d'interface n'est pas une garantie.
+     *
+     * L'erreur reste un signalement supprimable, et la conversation avec
+     * l'habitant reste ouverte : il peut dire que ce n'est pas réglé.
+     */
+    if (status && isFinal(oldStatus)) {
+      throw new AppError(
+        409,
+        'status_final',
+        'Ce signalement est résolu : son statut ne peut plus être modifié.'
+      )
+    }
+
+    /**
+     * Le retour en arrière est permis, et nommé.
+     *
+     * Un agent qui clique « Prendre en charge » sur la mauvaise ligne n'avait
+     * aucun moyen de se corriger. Rien n'empêchait techniquement le retour —
+     * c'est l'interface qui ne l'offrait pas — donc rien ne le traçait non
+     * plus : le journal d'audit montrait une succession de changements sans
+     * distinguer la marche avant du rattrapage.
+     */
+    const rollback = status ? isRollback(oldStatus, status) : false
+
     const { data: rows, error: rpcError } = await supabaseAdmin.rpc(
       'update_report_status_atomic',
       {
@@ -305,7 +647,7 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin, validate(updateRepo
         p_new_status: status,
         p_agent_id:   req.userId,
         p_tenant_id:  tenantId,
-        p_comment:    comment ?? null,
+        p_comment:    comment ?? (rollback ? `Retour à « ${status} »` : null),
       }
     )
 
@@ -323,6 +665,7 @@ router.patch('/:id/status', verifyToken, requireTenantAdmin, validate(updateRepo
       tenantId: req.tenant?.id,
       tenantSlug: req.tenant?.slug,
       comment,
+      rollback,
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
     }).catch(err => console.error('[Audit] Erreur:', err))
@@ -365,18 +708,7 @@ router.delete('/:id', verifyToken, requireTenantAdmin, async (req: Request, res:
       throw forbidden('Vous ne pouvez supprimer que les signalements de votre tenant.')
     }
 
-    if (currentReport.photo_url) {
-      try {
-        const urlObj = new URL(currentReport.photo_url)
-        const pathMatch = urlObj.pathname.match(/\/storage\/v1\/object\/sign\/photos\/(.+)\?/)
-        if (pathMatch && pathMatch[1]) {
-          const filePath = `reports/${pathMatch[1]}`
-          await supabaseAdmin.storage.from('photos').remove([filePath])
-        }
-      } catch (err) {
-        console.error('Erreur suppression photo:', err)
-      }
-    }
+    await removePhoto(currentReport.photo_url)
 
     await supabaseAdmin.from('status_history').delete().eq('report_id', id)
 
@@ -429,18 +761,7 @@ router.delete('/', verifyToken, requireTenantAdmin, async (req: Request, res: Re
     }
 
     for (const report of reports) {
-      if (report.photo_url) {
-        try {
-          const urlObj = new URL(report.photo_url)
-          const pathMatch = urlObj.pathname.match(/\/storage\/v1\/object\/sign\/photos\/(.+)\?/)
-          if (pathMatch && pathMatch[1]) {
-            const filePath = `reports/${pathMatch[1]}`
-            await supabaseAdmin.storage.from('photos').remove([filePath])
-          }
-        } catch (err) {
-          console.error(`Erreur suppression photo pour ${report.id}:`, err)
-        }
-      }
+      await removePhoto(report.photo_url)
     }
 
     await supabaseAdmin.from('status_history').delete().in('report_id', ids)

@@ -2,8 +2,10 @@ import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
 import { pushAgentComment } from '../../services/pushService.js'
 import { sendCommentNotification } from './comments.email.js'
+import { allowsEmail } from '../../services/notificationPreferences.js'
 import { AppError, notFound, forbidden } from '../../middleware/errorHandler.js'
-import { getAuthUserEmail } from '../../lib/authHelpers.js'
+import { ownsReport } from '../../lib/reportOwnership.js'
+import { resolveCitizenContact } from '../../lib/citizenContact.js'
 
 // ─── Lister les commentaires d'un signalement ────────────────────
 export async function getComments(
@@ -18,7 +20,7 @@ export async function getComments(
 
     const { data: report } = await supabaseAdmin
       .from('reports')
-      .select('id, user_id, status')
+      .select('id, user_id, status, anonymous_token')
       .eq('id', reportId)
       .eq('tenant_id', req.tenant.id)
       .single()
@@ -26,11 +28,22 @@ export async function getComments(
     if (!report) throw notFound('Signalement')
 
     const userRole = req.userRole
-    const isCitizen = userRole === 'citizen' || (!userRole && req.userId)
+    const isAgent = userRole === 'agent' || userRole === 'admin' || userRole === 'super_admin'
+    const isAuthor = ownsReport(req, report)
 
-    if (isCitizen && report.user_id !== req.userId) {
+    /**
+     * Un agent voit tous les fils de sa commune. Un habitant, le sien — prouvé
+     * par son compte ou par son jeton de suivi.
+     *
+     * Le test portait auparavant sur le seul `user_id`, nul pour un signalement
+     * déposé sans compte : son auteur recevait un 403 sur son propre fil, et
+     * l'application mobile n'affichait donc jamais les réponses de la mairie.
+     */
+    if (!isAgent && !isAuthor) {
       throw forbidden('Accès non autorisé.')
     }
+
+    const isCitizen = !isAgent
 
     const { data: comments, error } = await supabaseAdmin
       .from('report_comments')
@@ -78,7 +91,7 @@ export async function getComments(
       return comment
     })
 
-    if (isCitizen && req.userId) {
+    if (isCitizen) {
       await supabaseAdmin
         .from('report_comments')
         .update({ read_by_citizen: true })
@@ -121,16 +134,23 @@ export async function createAgentComment(
 
     const { data: report, error: reportError } = await supabaseAdmin
       .from('reports')
-      .select('id, status, title, user_id')
+      .select('id, status, title, user_id, anonymous_email')
       .eq('id', reportId)
       .eq('tenant_id', req.tenant.id)
       .single()
 
     if (reportError || !report) throw notFound('Signalement')
 
-    const citizenEmail = report.user_id
-      ? await getAuthUserEmail(report.user_id)
-      : null
+    /**
+     * L'adresse cherchée passe maintenant par `resolveCitizenContact`.
+     *
+     * Elle était déduite du seul `user_id`, nul pour un signalement déposé sans
+     * compte : `anonymous_email` était sur la même ligne et n'était jamais lue.
+     * Aucun e-mail ne partait, aucun push non plus — le message de l'agent
+     * restait en base sans atteindre personne.
+     */
+    const contact = await resolveCitizenContact(report)
+    const citizenEmail = contact.email
 
     const { data: agentProfile } = await supabaseAdmin
       .from('tenant_users')
@@ -175,7 +195,13 @@ export async function createAgentComment(
       }).catch(err => console.error('[Comments] Erreur push:', err))
     }
 
-    if (citizenEmail) {
+    // La grille canal × événement : couper les e-mails ne coupe pas le push
+    // envoyé juste au-dessus, et inversement.
+    const emailAllowed =
+      citizenEmail !== null &&
+      (await allowsEmail({ userId: report.user_id, email: citizenEmail }, 'comment'))
+
+    if (citizenEmail && emailAllowed) {
       await sendCommentNotification({
         to: citizenEmail,
         reportTitle: report.title,
@@ -204,20 +230,34 @@ export async function createCitizenComment(
   next: NextFunction
 ): Promise<void> {
   try {
-    if (!req.tenant || !req.userId) throw notFound('Tenant')
+    if (!req.tenant) throw notFound('Tenant')
+
+    /**
+     * Répondre demande une session, même anonyme.
+     *
+     * Le jeton de suivi prouve à qui appartient le signalement, pas qui écrit :
+     * `report_comments.author_id` doit désigner quelqu'un. L'application mobile
+     * ouvre toujours une session anonyme, donc ce cas ne la concerne pas — il
+     * ne laisse de côté que la page de suivi web, ouverte depuis un e-mail,
+     * d'où l'on peut lire le fil sans pouvoir y répondre.
+     */
+    if (!req.userId) {
+      throw new AppError(401, 'unauthorized', 'Ouvrez l’application pour répondre à ce message.')
+    }
 
     const { reportId } = req.params
     const { content, parentId } = req.body
 
     const { data: report } = await supabaseAdmin
       .from('reports')
-      .select('id, status, title, user_id')
+      .select('id, status, title, user_id, anonymous_token')
       .eq('id', reportId)
       .eq('tenant_id', req.tenant.id)
-      .eq('user_id', req.userId!)
       .single()
 
-    if (!report) throw forbidden('Ce signalement ne vous appartient pas.')
+    if (!report || !ownsReport(req, report)) {
+      throw forbidden('Ce signalement ne vous appartient pas.')
+    }
 
     const { data: parent } = await supabaseAdmin
       .from('report_comments')
@@ -283,21 +323,58 @@ export async function getUnreadCount(
   try {
     if (!req.tenant) throw notFound('Tenant')
 
+    /**
+     * Les réponses non lues, **et de quoi les afficher**.
+     *
+     * L'endpoint ne rendait que des identifiants : la pastille d'une ligne
+     * pouvait s'allumer, mais la cloche de l'en-tête n'avait rien à montrer —
+     * un compteur sans liste n'indique pas où aller. Le titre du signalement et
+     * la date du dernier message remontent donc avec.
+     */
     const { data, error } = await supabaseAdmin
       .from('report_comments')
-      .select('report_id')
+      .select('report_id, created_at, reports!inner(title, reference)')
       .eq('tenant_id', req.tenant.id)
       .eq('author_type', 'citizen')
       .eq('read_by_agent', false)
+      .order('created_at', { ascending: false })
 
     if (error) throw error
 
     const counts: Record<string, number> = {}
-    ;(data ?? []).forEach(c => {
-      counts[c.report_id] = (counts[c.report_id] ?? 0) + 1
-    })
+    const items = new Map<string, {
+      report_id: string
+      report_title: string
+      report_reference: string
+      last_reply_at: string
+      count: number
+    }>()
 
-    res.json({ total: data?.length ?? 0, byReport: counts })
+    for (const comment of (data ?? []) as any[]) {
+      counts[comment.report_id] = (counts[comment.report_id] ?? 0) + 1
+
+      const existing = items.get(comment.report_id)
+      if (existing) {
+        existing.count += 1
+        continue
+      }
+
+      // Les lignes arrivent de la plus récente à la plus ancienne : la première
+      // vue pour un signalement porte donc la date du dernier message.
+      items.set(comment.report_id, {
+        report_id: comment.report_id,
+        report_title: comment.reports?.title ?? 'Signalement',
+        report_reference: comment.reports?.reference ?? '',
+        last_reply_at: comment.created_at,
+        count: 1,
+      })
+    }
+
+    res.json({
+      total: data?.length ?? 0,
+      byReport: counts,
+      items: [...items.values()],
+    })
   } catch (err) {
     next(err)
   }

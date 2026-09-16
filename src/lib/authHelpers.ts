@@ -35,3 +35,44 @@ export async function getAuthEmailMap(userIds: string[]): Promise<Map<string, st
   }
   return map
 }
+
+/**
+ * Ce que le compte Supabase dit d'un membre, au-delà de son adresse.
+ *
+ * `tenant_users` ne porte qu'un booléen `is_active`, qui ne distingue pas
+ * « invité, n'a jamais ouvert son e-mail » de « membre actif depuis six mois ».
+ * Un administrateur relançait donc à l'aveugle, ou pas du tout.
+ *
+ * Les deux dates qui manquaient vivent dans `auth.users` et ne sont lisibles
+ * qu'avec la clé service_role : la confirmation d'adresse dit si l'invitation a
+ * été acceptée, la dernière connexion dit si le compte sert encore.
+ */
+export interface AuthAccount {
+  email: string | null
+  /** L'invitation a été acceptée : l'adresse est confirmée. */
+  confirmedAt: string | null
+  lastSignInAt: string | null
+}
+
+export async function getAuthAccountMap(userIds: string[]): Promise<Map<string, AuthAccount>> {
+  const map = new Map<string, AuthAccount>()
+  if (userIds.length === 0) return map
+
+  try {
+    const { data } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 })
+    const wanted = new Set(userIds)
+
+    for (const user of data?.users ?? []) {
+      if (!wanted.has(user.id)) continue
+      map.set(user.id, {
+        email: user.email ?? null,
+        confirmedAt: user.email_confirmed_at ?? user.confirmed_at ?? null,
+        lastSignInAt: user.last_sign_in_at ?? null,
+      })
+    }
+  } catch (err) {
+    console.error('[AuthHelpers] getAuthAccountMap failed:', err)
+  }
+
+  return map
+}

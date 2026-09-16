@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
+import { allowsPush, type NotificationEvent } from './notificationPreferences.js'
 
 /**
  * Push notifications, through Expo's push service.
@@ -72,28 +73,26 @@ async function send(messages: PushMessage[]): Promise<void> {
   }
 }
 
-/** The switches offered on the profile screen, one per kind of push. */
-type NotificationKind = 'notify_status' | 'notify_comment'
-
 /**
- * Every device the citizen has registered for this commune, minus the ones
- * that opted out of this kind of notification.
+ * Every device the citizen has registered for this commune — provided they
+ * still accept this kind of notification.
  *
- * Filtered in the query rather than after it: an opted-out citizen should cost
- * us nothing, and a `false` here is the only thing standing between them and a
- * phone buzzing at 7am about a pothole they stopped caring about.
+ * The preference is read once, from the account, rather than filtered inside
+ * the token query: since migration 028 it lives on the account and not on the
+ * device, because e-mail has no device to hang a switch on.
  */
 async function tokensFor(
   userId: string,
   tenantId: string,
-  kind: NotificationKind
+  event: NotificationEvent
 ): Promise<string[]> {
+  if (!(await allowsPush(userId, event))) return []
+
   const { data, error } = await supabaseAdmin
     .from('device_tokens')
     .select('token')
     .eq('user_id', userId)
     .eq('tenant_id', tenantId)
-    .eq(kind, true)
 
   if (error) {
     console.error('[Push] Lecture des tokens impossible:', error.message)
@@ -104,6 +103,7 @@ async function tokensFor(
 }
 
 const STATUS_TITLES: Record<string, string> = {
+  transmis: 'Votre signalement a été transmis au service',
   pris_en_charge: 'Votre signalement est pris en charge',
   resolu: 'Votre signalement a été résolu',
 }
@@ -121,7 +121,7 @@ export async function pushStatusChange(params: {
   // worth waking a phone for.
   if (!title) return
 
-  const tokens = await tokensFor(params.userId, params.tenantId, 'notify_status')
+  const tokens = await tokensFor(params.userId, params.tenantId, 'status')
 
   await send(
     tokens.map((to) => ({
@@ -142,7 +142,7 @@ export async function pushAgentComment(params: {
   reportTitle: string
   excerpt: string
 }): Promise<void> {
-  const tokens = await tokensFor(params.userId, params.tenantId, 'notify_comment')
+  const tokens = await tokensFor(params.userId, params.tenantId, 'comment')
 
   await send(
     tokens.map((to) => ({

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { getUnreadCount, getMyUnreadCount } from './comments.handler.js'
 import { verifyToken } from '../../middleware/auth.js'
-import { requireTenantAdmin } from '../../middleware/roleGuard.js'
+import { requireAgent } from '../../middleware/roleGuard.js'
 
 const router: Router = Router()
 
@@ -10,7 +10,7 @@ const router: Router = Router()
 router.get(
   '/unread',
   verifyToken,
-  requireTenantAdmin,
+  requireAgent,
   getUnreadCount
 )
 

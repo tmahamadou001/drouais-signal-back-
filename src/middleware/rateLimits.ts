@@ -87,6 +87,40 @@ export const voteReadLimiter = rateLimit({
   legacyHeaders: false,
 })
 
+/**
+ * Résolution position → commune.
+ *
+ * Chaque appel sollicite un service public gratuit (BAN, puis geo.api.gouv.fr).
+ * L'app résout une fois au lancement et à la demande du citoyen : 20 par minute
+ * couvrent largement un usage honnête, tout en empêchant qu'on se serve de nous
+ * comme d'un géocodeur gratuit — ce qui nous ferait bannir des deux API avant
+ * de nous coûter quoi que ce soit.
+ */
+export const geoResolveLimiter = rateLimit({
+  keyGenerator: userOrIpKey,
+  windowMs: 1 * 60 * 1000,
+  max: 20,
+  message: { error: 'rate_limit', message: 'Trop de requêtes de localisation. Réessayez dans 1 minute.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+/**
+ * L'annuaire des communes clientes.
+ *
+ * Il tient dans une réponse et ne change qu'à la signature d'un contrat : le
+ * client le charge une fois et le garde. Une cadence généreuse pour un usage
+ * normal, assez basse pour qu'aspirer la liste des clients d'OnSignale en
+ * boucle ne soit pas gratuit.
+ */
+export const publicTenantsLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'rate_limited', message: 'Trop de requêtes. Réessayez dans une minute.' },
+})
+
 export const analyzeLimiter = rateLimit({
   keyGenerator: userOrIpKey,
   windowMs: 1 * 60 * 1000,
@@ -111,6 +145,22 @@ export const adminSlowDown = rateLimit({
   message: { error: 'rate_limit', message: 'Trop de requêtes admin. Réessayez dans 1 minute.' },
   standardHeaders: true,
   legacyHeaders: false,
+})
+
+/**
+ * Les liens remis aux services extérieurs.
+ *
+ * Généreux, parce qu'un service peut cliquer plusieurs fois, recharger, revenir
+ * le lendemain — et parce que le jeton fait 32 octets : ce plafond n'est pas
+ * là pour arrêter une énumération, il est là pour qu'un lien fuité ne serve pas
+ * de levier contre l'API.
+ */
+export const serviceHandoffLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too_many_requests', message: 'Trop de requêtes. Réessayez dans quelques minutes.' },
 })
 
 export const weeklyReportLimiter = rateLimit({

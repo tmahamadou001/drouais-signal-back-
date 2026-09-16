@@ -1,12 +1,12 @@
 import { Router, type Request, type Response, NextFunction, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
-import { requireTenantAdmin } from '../middleware/roleGuard.js'
+import { requireTeamMember } from '../middleware/roleGuard.js'
 import { AppError, badRequest } from '../middleware/errorHandler.js'
 
 const router: ExpressRouter = Router()
 
-router.get('/heatmap', verifyToken, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/heatmap', verifyToken, requireTeamMember, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!req.tenant?.id) throw badRequest('Tenant requis.')
 

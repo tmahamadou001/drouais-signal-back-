@@ -6,6 +6,7 @@ import {
   duplicateCheckLimiter,
   analyzeLimiter,
   heatmapLimiter,
+  geoResolveLimiter,
   adminSlowDown,
   weeklyReportLimiter,
 } from './middleware/rateLimits.js'
@@ -17,9 +18,11 @@ import analyzeRouter from './routes/analyze.js'
 import mapRouter from './routes/map.js'
 import heatmapRouter from './routes/heatmap.js'
 import weeklyReportRouter from './routes/weeklyReport.js'
+import serviceHandoffRouter from './routes/serviceHandoff.js'
 import tenantRouter from './routes/tenant.js'
 import tenantsRouter from './routes/tenants.js'
 import devicesRouter from './routes/devices.js'
+import notificationsRouter from './routes/notifications.js'
 import commentsRouter from './modules/comments/comments.router.js'
 import unreadCommentsRouter from './modules/comments/unread.router.js'
 import uploadRouter from './routes/upload.js'
@@ -29,6 +32,7 @@ import { resolveTenant, requireTenant } from './middleware/tenantResolver.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import compression from 'compression'
 import './cron/weeklyReport.js'
+import './cron/retention.js'
 
 
 const app = express()
@@ -104,9 +108,9 @@ app.use('/api/', resolveTenant)
  * way a missing slug is a 400 everywhere, and the failure mode of an oversight
  * becomes "no data" instead of "everyone's data".
  *
- * `/api/tenants/public` and `/api/auth` are mounted outside this guard: the
- * first is the commune directory the app reads *before* it has a slug, the
- * second handles password reset where the slug is optional.
+ * `/api/tenants` and `/api/auth` are mounted outside this guard: the first
+ * resolves a position into a commune — it is what the app calls *before* it has
+ * a slug — and the second handles password reset, where the slug is optional.
  */
 app.use('/api/reports', requireTenant)
 app.use('/api/comments', requireTenant)
@@ -127,8 +131,11 @@ app.use('/api/analyze-photo', analyzeLimiter, analyzeRouter)
 app.use('/api/map', mapRouter)
 app.use('/api/tenant', tenantRouter)
 // Public commune directory — no slug, no auth. Mobile only (see routes/tenants.ts).
+app.use('/api/tenants/resolve', geoResolveLimiter)
 app.use('/api/tenants', tenantsRouter)
 app.use('/api/devices', devicesRouter)
+// Préférences de notification et désabonnement en un clic (List-Unsubscribe).
+app.use('/api/notifications', notificationsRouter)
 
 // Routes admin avec slow down progressif
 app.use('/api/admin', adminSlowDown)
@@ -137,6 +144,14 @@ app.use('/api/admin', heatmapLimiter, heatmapRouter)
 app.use('/api/admin/weekly-report/send', weeklyReportLimiter)
 app.use('/api/admin', weeklyReportRouter)
 app.use('/api/audit', auditRouter)
+/**
+ * Les liens remis aux services extérieurs.
+ *
+ * Hors de `resolveTenant` : celui qui clique n'a ni compte, ni sous-domaine, ni
+ * en-tête — le jeton porte déjà sa commune, et c'est lui qui fait autorité.
+ */
+app.use('/api/service', serviceHandoffRouter)
+
 app.use('/api/auth', authRouter)
 
 // ─── Health check ───

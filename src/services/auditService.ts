@@ -21,6 +21,7 @@ export interface AuditLogParams {
 }
 
 export type AuditAction =
+  | 'auth.login'
   | 'user.created'
   | 'user.invited'
   | 'user.role_changed'
@@ -28,6 +29,11 @@ export type AuditAction =
   | 'report.created'
   | 'report.status_changed'
   | 'report.service_notified'
+  // Gestes d'un service extérieur, via son lien de transmission (migration 034).
+  // Ils n'ont pas de `user_id` : personne n'est connecté, et le destinataire du
+  // lien est la seule identité vérifiable.
+  | 'service.acknowledged'
+  | 'service.completed'
   | 'report.deleted'
   | 'report.bulk_deleted'
   | 'tenant.created'
@@ -151,6 +157,8 @@ export async function auditReportStatusChanged(params: {
   tenantId?: string
   tenantSlug?: string
   comment?: string
+  /** Le changement ramène le signalement à une étape antérieure. */
+  rollback?: boolean
   ipAddress?: string
   userAgent?: string
 }) {
@@ -167,6 +175,9 @@ export async function auditReportStatusChanged(params: {
       old_status: params.oldStatus,
       new_status: params.newStatus,
       comment: params.comment,
+      // Seulement quand c'en est un : une clé `rollback: false` sur chaque
+      // changement rendrait illisible la lecture du journal.
+      ...(params.rollback ? { rollback: true } : {}),
     },
     ipAddress: params.ipAddress,
     userAgent: params.userAgent,

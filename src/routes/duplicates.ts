@@ -38,23 +38,6 @@ interface NearbyReportRow {
   created_at: string
 }
 
-function isWithinTenantBounds(
-  lat: number,
-  lng: number,
-  centerLat: number,
-  centerLng: number,
-  radiusKm: number,
-): boolean {
-  const R = 6371
-  const dLat = (lat - centerLat) * Math.PI / 180
-  const dLng = (lng - centerLng) * Math.PI / 180
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(centerLat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
-  const distanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-  return distanceKm <= radiusKm
-}
-
 function calculateSimilarityScore(
   distance: number,
   sameCategory: boolean
@@ -76,20 +59,19 @@ router.post('/check-duplicate', async (req: Request, res: Response, next: NextFu
       throw badRequest('Les coordonnées doivent être des nombres.')
     }
 
-    if (req.tenant?.id) {
-      const { data: tenantConfig } = await supabaseAdmin
-        .from('tenant_configs')
-        .select('map_lat, map_lng, map_radius_km')
-        .eq('tenant_id', req.tenant.id)
-        .single()
+    if (!req.tenant?.id) throw badRequest('Commune requise.')
 
-      if (tenantConfig?.map_lat && tenantConfig?.map_lng) {
-        const radiusKm = tenantConfig.map_radius_km ?? 15
-        if (!isWithinTenantBounds(lat, lng, tenantConfig.map_lat, tenantConfig.map_lng, radiusKm)) {
-          throw badRequest(`Les coordonnées sont en dehors de la zone autorisée (rayon : ${radiusKm} km).`)
-        }
-      }
-    }
+    /*
+     * Le bornage géographique a disparu.
+     *
+     * Il rejetait une recherche dont les coordonnées sortaient d'un cercle de
+     * 15 km autour de la mairie. C'était cohérent quand le citoyen choisissait
+     * sa commune ; depuis la v2 la position fait autorité et le tenant découle
+     * des frontières INSEE, qui n'ont rien de circulaire. Une commune étendue ou
+     * un signalement en limite communale tombait dehors — et l'échec était
+     * invisible, le client avalant volontairement l'erreur pour ne pas bloquer
+     * un envoi. L'écran de doublon ne s'affichait simplement jamais.
+     */
 
     const { data: rpcData, error } = await supabaseAdmin.rpc('find_nearby_reports', {
       p_lat: lat,
@@ -100,16 +82,31 @@ router.post('/check-duplicate', async (req: Request, res: Response, next: NextFu
 
     if (error) throw new AppError(500, 'internal_error', 'Erreur lors de la recherche de signalements similaires.')
 
+    /**
+     * `find_nearby_reports` cherche dans **toute** la base : la fonction date
+     * d'avant le multi-tenant et ne connaît ni commune ni publication. Le tri
+     * se fait donc ici, et il est obligatoire.
+     *
+     * Deux filtres, deux raisons distinctes :
+     *
+     *  - `tenant_id` — sans lui, un appel sans en-tête de commune rendait les
+     *    signalements de n'importe quelle commune de France ;
+     *  - `is_published` — les signalements d'une commune prospect ne sont
+     *    publiés nulle part, et les faire apparaître ici avec leur titre, leur
+     *    photo et leur statut serait une publication comme une autre.
+     */
     let data: NearbyReportRow[] = rpcData ?? []
-    if (req.tenant?.id && data.length > 0) {
-      const ids = data.map(r => r.id)
-      const { data: tenantReports } = await supabaseAdmin
+
+    if (data.length > 0) {
+      const { data: visible } = await supabaseAdmin
         .from('reports')
         .select('id')
-        .in('id', ids)
-        .eq('tenant_id', req.tenant.id)
-      const validIds = new Set((tenantReports ?? []).map(r => r.id))
-      data = data.filter(r => validIds.has(r.id))
+        .in('id', data.map((report) => report.id))
+        .eq('tenant_id', req.tenant!.id)
+        .eq('is_published', true)
+
+      const allowed = new Set((visible ?? []).map((report) => report.id))
+      data = data.filter((report) => allowed.has(report.id))
     }
 
     if (data.length === 0) {

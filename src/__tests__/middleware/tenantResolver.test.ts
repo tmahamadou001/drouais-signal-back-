@@ -33,6 +33,7 @@ function makeReq(overrides: Partial<Request> = {}): Request {
     headers: {},
     hostname: 'localhost',
     query: {},
+    path: '/reports',
     ...overrides,
   } as unknown as Request
 }
@@ -88,6 +89,41 @@ describe('resolveTenant', () => {
     await resolveTenant(req1, {} as Response, next)
     await resolveTenant(req2, {} as Response, next)
     expect(supabaseAdmin.from).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('resolveTenant — slug-agnostic routes', () => {
+  it('lets position resolution through without hitting the database', async () => {
+    vi.mocked(supabaseAdmin.from).mockClear()
+    const next = vi.fn()
+    // Un slug que la base ne connaît pas : exactement la situation d'un client
+    // dont le cache est périmé.
+    const req = makeReq({ path: '/tenants/resolve', headers: { 'x-tenant-slug': 'inconnue' } })
+
+    await resolveTenant(req, {} as Response, next)
+
+    // Sans cette exemption, le seul appel capable de sortir le client de son
+    // erreur serait le seul qu'il ne peut plus passer.
+    expect(next).toHaveBeenCalledWith()
+    expect(supabaseAdmin.from).not.toHaveBeenCalled()
+  })
+
+  it('lets position resolution and the waitlist through', async () => {
+    for (const path of ['/tenants/resolve', '/tenants/waitlist']) {
+      const next = vi.fn()
+      await resolveTenant(makeReq({ path }), {} as Response, next)
+      expect(next).toHaveBeenCalledWith()
+    }
+  })
+
+  it('still resolves everywhere else', async () => {
+    mockTenantQuery(ACTIVE_TENANT)
+    const next = vi.fn()
+    const req = makeReq({ path: '/reports', headers: { 'x-tenant-slug': 'dreux' } })
+
+    await resolveTenant(req, {} as Response, next)
+
+    expect(req.tenant).toMatchObject({ slug: 'dreux' })
   })
 })
 

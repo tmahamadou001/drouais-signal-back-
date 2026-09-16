@@ -1,11 +1,11 @@
 import { logoImg } from './brand.js'
 const COLORS = {
   primary: '#1A56A0',
-  background: '#F9FAFB',
+  background: '#F6F7F9',
   white: '#FFFFFF',
-  text: '#1F2937',
+  text: '#111827',
   textLight: '#6B7280',
-  border: '#E5E7EB',
+  border: '#E2E5EA',
 }
 
 export interface InviteEmailParams {

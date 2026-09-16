@@ -1,11 +1,29 @@
+import { plainSubject } from '../templates/brand.js'
 import { Router, type Request, type Response, NextFunction, type Router as ExpressRouter } from 'express'
 import { Resend } from 'resend'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
+import { resolveCategories, resolveActiveCategories } from '../services/categoryService.js'
 import { verifyToken } from '../middleware/auth.js'
 import { requireTenant, invalidateTenantCache } from '../middleware/tenantResolver.js'
 import { requireTenantAdmin, requireSuperAdmin } from '../middleware/roleGuard.js'
 import { auditUserCreated, auditTenantCreated, auditTenantStatusChanged, createAuditLog } from '../services/auditService.js'
 import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
+import { listTeam, countOtherAdmins } from '../services/teamService.js'
+
+/**
+ * Le refus qui protège la commune d'elle-même.
+ *
+ * 409 et non 403 : l'administrateur a bien le droit de faire ce geste, c'est
+ * l'état de la commune qui l'en empêche — et le message dit comment s'en
+ * sortir plutôt que de constater l'interdiction.
+ */
+function lastAdmin(): never {
+  throw new AppError(
+    409,
+    'last_admin',
+    'Cette commune n’aurait plus aucun administrateur. Nommez-en un autre avant de retirer celui-ci.'
+  )
+}
 import { getAuthEmailMap } from '../lib/authHelpers.js'
 import { buildInviteEmail } from '../templates/inviteNotification.js'
 import type { TenantUser, TenantCategory } from '../types/tenant.js'
@@ -38,21 +56,47 @@ router.get('/my-role', verifyToken, requireTenant, async (req: Request, res: Res
   }
 })
 
+/**
+ * La configuration d'un tenant qui n'en a pas.
+ *
+ * Un prospect est une coquille : personne ne l'a paramétré, et personne ne le
+ * fera avant que la mairie signe. Les coordonnées de carte restent absentes
+ * plutôt que d'hériter d'un défaut — centrer la carte d'une commune inconnue
+ * sur la mairie de Dreux serait pire que de ne rien centrer du tout.
+ */
+function defaultConfig(tenantId: string, name: string) {
+  return {
+    tenant_id: tenantId,
+    city_name: name,
+    map_lat: null,
+    map_lng: null,
+    map_zoom: null,
+    primary_color: '#1A56A0',
+    feature_votes: true,
+    feature_ai_analysis: true,
+    feature_weekly_report: false,
+    feature_heatmap: false,
+    updated_at: null,
+  }
+}
+
 // ─── GET /api/tenant/config ─── Public ──────────────────
 router.get('/config', requireTenant, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const [configResult, categoriesResult] = await Promise.all([
+    const [configResult, categories] = await Promise.all([
       supabaseAdmin
         .from('tenant_configs')
-        .select('tenant_id, city_name, map_lat, map_lng, map_zoom, map_radius_km, primary_color, feature_anonymous_reports, feature_votes, feature_ai_analysis, feature_weekly_report, feature_heatmap, updated_at')
+        .select('tenant_id, city_name, map_lat, map_lng, map_zoom, primary_color, feature_votes, feature_ai_analysis, feature_weekly_report, feature_heatmap, updated_at')
         .eq('tenant_id', req.tenant!.id)
-        .single(),
-      supabaseAdmin
-        .from('tenant_categories')
-        .select('*')
-        .eq('tenant_id', req.tenant!.id)
-        .eq('is_active', true)
-        .order('sort_order'),
+        // `maybeSingle`, pas `single` : un tenant prospect est créé sans ligne
+        // de configuration, et `single` traitait cette absence comme une erreur
+        // serveur. L'app de l'habitant recevait un 500 et affichait « impossible
+        // de charger votre commune » — il était bloqué à l'entrée.
+        .maybeSingle(),
+      // Le `slug` rendu est le slug **canonique**, jamais le slug local :
+      // c'est celui que porte `reports.category` et celui que les clients
+      // comparent pour retrouver un libellé.
+      resolveActiveCategories(req.tenant!.id),
     ])
 
     if (configResult.error) throw new AppError(500, 'internal_error', 'Erreur configuration tenant.')
@@ -62,8 +106,12 @@ router.get('/config', requireTenant, async (req: Request, res: Response, next: N
       name: req.tenant!.name,
       status: req.tenant!.status,
       plan: req.tenant!.plan,
-      config: configResult.data,
-      categories: categoriesResult.data ?? [],
+      // Une commune sans configuration rend des valeurs par défaut plutôt que
+      // `null` : tous les clients lisent `config.city_name` et `config.*`, et
+      // leur faire gérer l'absence partout pour un cas de bord se paierait en
+      // écrans à moitié vides.
+      config: configResult.data ?? defaultConfig(req.tenant!.id, req.tenant!.name),
+      categories,
     })
   } catch (err) {
     next(err)
@@ -73,14 +121,10 @@ router.get('/config', requireTenant, async (req: Request, res: Response, next: N
 // ─── GET /api/tenant/categories ─── Public ──────────────
 router.get('/categories', requireTenant, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('tenant_categories')
-      .select('*')
-      .eq('tenant_id', req.tenant!.id)
-      .order('sort_order')
-
-    if (error) throw error
-    res.json(data)
+    // Les inactives comprises : le back-office doit pouvoir les réactiver, et
+    // un signalement déjà enregistré dans une catégorie désactivée a encore
+    // besoin de son libellé.
+    res.json(await resolveCategories(req.tenant!.id))
   } catch (err) {
     next(err)
   }
@@ -91,30 +135,25 @@ router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (r
   try {
     // Explicit whitelist — never spread req.body directly into a DB update
     const {
-      city_name, primary_color, logo_url, welcome_message,
-      map_lat, map_lng, map_zoom, map_radius_km,
-      feature_anonymous_reports, feature_votes, feature_ai_analysis,
+      city_name, primary_color,
+      map_lat, map_lng, map_zoom,
+      feature_votes, feature_ai_analysis,
       feature_weekly_report, feature_heatmap,
-      weekly_report_day, weekly_report_hour, weekly_report_emails,
+      weekly_report_day, weekly_report_hour,
     } = req.body
 
     const allowedUpdate: Record<string, unknown> = {}
     if (city_name               !== undefined) allowedUpdate.city_name                = city_name
     if (primary_color           !== undefined) allowedUpdate.primary_color            = primary_color
-    if (logo_url                !== undefined) allowedUpdate.logo_url                 = logo_url
-    if (welcome_message         !== undefined) allowedUpdate.welcome_message          = welcome_message
     if (map_lat                 !== undefined) allowedUpdate.map_lat                  = map_lat
     if (map_lng                 !== undefined) allowedUpdate.map_lng                  = map_lng
     if (map_zoom                !== undefined) allowedUpdate.map_zoom                 = map_zoom
-    if (map_radius_km           !== undefined) allowedUpdate.map_radius_km            = map_radius_km
-    if (feature_anonymous_reports !== undefined) allowedUpdate.feature_anonymous_reports = feature_anonymous_reports
     if (feature_votes           !== undefined) allowedUpdate.feature_votes            = feature_votes
     if (feature_ai_analysis     !== undefined) allowedUpdate.feature_ai_analysis      = feature_ai_analysis
     if (feature_weekly_report   !== undefined) allowedUpdate.feature_weekly_report    = feature_weekly_report
     if (feature_heatmap         !== undefined) allowedUpdate.feature_heatmap          = feature_heatmap
     if (weekly_report_day       !== undefined) allowedUpdate.weekly_report_day        = weekly_report_day
     if (weekly_report_hour      !== undefined) allowedUpdate.weekly_report_hour       = weekly_report_hour
-    if (weekly_report_emails    !== undefined) allowedUpdate.weekly_report_emails     = weekly_report_emails
 
     if (Object.keys(allowedUpdate).length === 0) {
       return res.status(400).json({ error: 'Aucun champ modifiable fourni.' })
@@ -124,7 +163,7 @@ router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (r
       .from('tenant_configs')
       .update({ ...allowedUpdate, updated_at: new Date().toISOString() })
       .eq('tenant_id', req.tenant!.id)
-      .select('tenant_id, city_name, map_lat, map_lng, map_zoom, map_radius_km, primary_color, logo_url, welcome_message, feature_anonymous_reports, feature_votes, feature_ai_analysis, feature_weekly_report, feature_heatmap, weekly_report_day, weekly_report_hour, weekly_report_emails, updated_at')
+      .select('tenant_id, city_name, map_lat, map_lng, map_zoom, primary_color, feature_votes, feature_ai_analysis, feature_weekly_report, feature_heatmap, weekly_report_day, weekly_report_hour, updated_at')
       .single()
 
     if (error) throw error
@@ -148,12 +187,41 @@ router.patch('/config', verifyToken, requireTenant, requireTenantAdmin, async (r
 })
 
 // ─── PUT /api/tenant/categories ─── Admin ───────────────
+/**
+ * Ce que la commune décide de la taxonomie nationale.
+ *
+ * Elle n'en crée ni n'en supprime aucune : les slugs sont canoniques, c'est ce
+ * qui rend comparables deux signalements de deux communes et mesurable la
+ * justesse de l'IA. Elle règle le libellé affiché, le service destinataire, le
+ * délai, et si elle traite ou non cette catégorie.
+ *
+ * Un slug hors liste est **refusé** plutôt qu'ignoré : l'ancien éditeur
+ * fabriquait des `cat_1775827638804`, invisibles de l'IA comme de la
+ * validation, et personne ne s'en apercevait avant de chercher pourquoi une
+ * catégorie ne recevait jamais rien.
+ */
 router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    type CategoryInput = { slug: string; label: string; icon?: string; color?: string; description?: string; isActive?: boolean; sortOrder?: number; slaHours?: number; serviceName?: string | null; serviceEmails?: string[] }
+    type CategoryInput = {
+      slug: string
+      label?: string
+      isActive?: boolean
+      sortOrder?: number
+      slaHours?: number
+      serviceName?: string | null
+      serviceEmails?: string[]
+    }
     const { categories } = req.body as { categories: CategoryInput[] }
     if (!Array.isArray(categories) || categories.length === 0) {
       throw badRequest('categories requis.')
+    }
+
+    const { data: canonical } = await supabaseAdmin.from('categories').select('slug, label_default')
+    const known = new Map((canonical ?? []).map((c) => [c.slug, c.label_default]))
+
+    const unknown = categories.filter((cat) => !known.has(cat.slug)).map((cat) => cat.slug)
+    if (unknown.length > 0) {
+      throw badRequest(`Catégorie inconnue : ${unknown.join(', ')}. La liste est nationale.`)
     }
 
     const { data, error } = await supabaseAdmin
@@ -161,18 +229,19 @@ router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async 
       .upsert(
         categories.map((cat, index) => ({
           tenant_id: req.tenant!.id,
+          category_slug: cat.slug,
+          // `slug` reste NOT NULL et unique par tenant depuis la 006. Pour une
+          // ligne créée après la 026 les deux coïncident ; les anciennes lignes
+          // gardent leur slug local, qui ne sort plus jamais de la base.
           slug: cat.slug,
-          label: cat.label,
-          icon: cat.icon,
-          color: cat.color,
-          description: cat.description ?? null,
+          label: cat.label?.trim() || known.get(cat.slug)!,
           is_active: cat.isActive ?? true,
           sort_order: cat.sortOrder ?? index,
           sla_hours: cat.slaHours ?? 168,
           service_name: cat.serviceName ?? null,
           service_emails: cat.serviceEmails ?? [],
         })),
-        { onConflict: 'tenant_id,slug' }
+        { onConflict: 'tenant_id,category_slug' }
       )
       .select()
 
@@ -193,7 +262,7 @@ router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async 
       userAgent: req.get('user-agent'),
     }).catch(err => console.error('[Audit] Erreur:', err))
 
-    res.json(data)
+    res.json(await resolveCategories(req.tenant!.id))
   } catch (err) {
     next(err)
   }
@@ -202,23 +271,7 @@ router.put('/categories', verifyToken, requireTenant, requireTenantAdmin, async 
 // ─── GET /api/tenant/users ─── Admin ────────────────────
 router.get('/users', verifyToken, requireTenant, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('tenant_users')
-      .select('*')
-      .eq('tenant_id', req.tenant!.id)
-      .order('created_at')
-
-    if (error) throw error
-
-    const userIds = data.map((u: TenantUser) => u.user_id)
-    const emailMap = await getAuthEmailMap(userIds)
-
-    const enriched = data.map((u: TenantUser) => ({
-      ...u,
-      email: emailMap.get(u.user_id) ?? null,
-    }))
-
-    res.json(enriched)
+    res.json(await listTeam(req.tenant!.id))
   } catch (err) {
     next(err)
   }
@@ -295,9 +348,9 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
     await resend.emails.send({
       from: `OnSignale <${process.env.EMAIL_FROM ?? 'invitations@onsignale.fr'}>`,
       to: email,
-      subject: isExistingUser
+      subject: plainSubject(isExistingUser
         ? `Vous avez rejoint l'équipe OnSignale — ${cityLabel}`
-        : `Invitation à rejoindre OnSignale — ${cityLabel}`,
+        : `Invitation à rejoindre OnSignale — ${cityLabel}`),
       html,
       text,
     }).catch(err => console.error('[Invite] Erreur envoi email:', err))
@@ -375,7 +428,7 @@ router.post('/users/:userId/resend-invite', verifyToken, requireTenant, requireT
     await resend.emails.send({
       from: `OnSignale <${process.env.EMAIL_FROM ?? 'invitations@onsignale.fr'}>`,
       to: email,
-      subject: `Accès à votre compte OnSignale — ${tenantConfig?.city_name ?? req.tenant!.name}`,
+      subject: plainSubject(`Accès à votre compte OnSignale — ${tenantConfig?.city_name ?? req.tenant!.name}`),
       html,
       text,
     })
@@ -391,6 +444,34 @@ router.patch('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, a
   try {
     const { userId } = req.params
     const { role, isActive, firstName, lastName, jobTitle } = req.body
+
+    /**
+     * Une commune ne peut pas se retrouver sans administrateur.
+     *
+     * Rien n'empêchait un administrateur de se rétrograder lui-même, ni de
+     * suspendre le dernier de ses pairs : la commune perdait alors le droit
+     * d'inviter qui que ce soit, de changer un réglage, ou de rendre la main —
+     * et il fallait un super-administrateur pour la débloquer.
+     *
+     * Vérifié ici, sur le rôle qu'on s'apprête à retirer, et pas seulement
+     * masqué dans l'écran : le bouton se cache, la règle se tient.
+     */
+    const losesAdmin = role !== undefined && role !== 'admin'
+    const getsSuspended = isActive === false
+
+    if (losesAdmin || getsSuspended) {
+      const { data: current } = await supabaseAdmin
+        .from('tenant_users')
+        .select('role, is_active')
+        .eq('tenant_id', req.tenant!.id)
+        .eq('user_id', userId)
+        .single()
+
+      if (current?.role === 'admin' && current.is_active) {
+        const others = await countOtherAdmins(req.tenant!.id, userId)
+        if (others === 0) throw lastAdmin()
+      }
+    }
 
     type UserUpdate = Partial<{ role: string; is_active: boolean; first_name: string; last_name: string; job_title: string }>
     const updates: UserUpdate = {}
@@ -437,10 +518,17 @@ router.delete('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, 
 
     const { data: existing } = await supabaseAdmin
       .from('tenant_users')
-      .select('role')
+      .select('role, is_active')
       .eq('tenant_id', req.tenant!.id)
       .eq('user_id', userId)
       .single()
+
+    // Révoquer le dernier administrateur laisserait la commune sans personne
+    // pour inviter son remplaçant.
+    if (existing?.role === 'admin' && existing.is_active) {
+      const others = await countOtherAdmins(req.tenant!.id, userId)
+      if (others === 0) throw lastAdmin()
+    }
 
     const { error } = await supabaseAdmin
       .from('tenant_users')
@@ -489,11 +577,76 @@ router.get('/all', verifyToken, requireSuperAdmin, async (_req: Request, res: Re
 })
 
 // ─── POST /api/tenant ─── Super Admin ───────────────────
+/**
+ * ─── GET /api/tenant/prospects — Le pipeline commercial ───
+ *
+ * Les communes dont des habitants signalent déjà, sans que la mairie y ait
+ * accès. Classées par volume : ce sont les deux chiffres qu'on lui présente —
+ * combien de ses administrés ont signalé, et combien attendent qu'elle
+ * rejoigne la plateforme.
+ *
+ * C'est ce qui remplace la publication sans permission. Un maire à qui on
+ * montre « 312 de vos habitants attendent » écoute ; le même, découvrant une
+ * carte publique des dégradations de sa ville, appelle son avocat.
+ */
+router.get('/prospects', verifyToken, requireSuperAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { data: tenants, error } = await supabaseAdmin
+      .from('tenants')
+      .select('id, slug, name, created_at, tenant_territories(insee_code, commune_name)')
+      .eq('status', 'prospect')
+
+    if (error) throw error
+
+    const prospects = await Promise.all(
+      (tenants ?? []).map(async (tenant) => {
+        const territories = Array.isArray(tenant.tenant_territories)
+          ? tenant.tenant_territories
+          : tenant.tenant_territories ? [tenant.tenant_territories] : []
+        const inseeCodes = territories.map((t: { insee_code: string }) => t.insee_code)
+
+        // Deux comptages séparés plutôt qu'une jointure : la liste d'attente est
+        // indexée par code INSEE, les signalements par tenant. Les rapprocher en
+        // SQL demanderait une vue, pour une page consultée quelques fois par jour.
+        const [reports, waitlist] = await Promise.all([
+          supabaseAdmin
+            .from('reports')
+            .select('*', { count: 'exact', head: true })
+            .eq('tenant_id', tenant.id),
+          inseeCodes.length > 0
+            ? supabaseAdmin
+                .from('commune_waitlist')
+                .select('*', { count: 'exact', head: true })
+                .in('insee_code', inseeCodes)
+            : Promise.resolve({ count: 0 }),
+        ])
+
+        return {
+          id: tenant.id,
+          slug: tenant.slug,
+          name: tenant.name,
+          created_at: tenant.created_at,
+          insee_codes: inseeCodes,
+          report_count: reports.count ?? 0,
+          waitlist_count: waitlist.count ?? 0,
+        }
+      })
+    )
+
+    // Le volume de signalements d'abord : c'est l'argument le plus concret.
+    prospects.sort((a, b) => b.report_count - a.report_count)
+
+    res.json(prospects)
+  } catch (err) {
+    next(err)
+  }
+})
+
 router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       slug, name, plan, contactEmail,
-      cityName, mapLat, mapLng, primaryColor, categories,
+      cityName, mapLat, mapLng, primaryColor,
     } = req.body
 
     if (!slug || !name || !cityName) {
@@ -523,22 +676,19 @@ router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Respo
     await supabaseAdmin.from('tenant_configs').insert({
       tenant_id: tenant.id,
       city_name: cityName,
-      map_lat: mapLat ?? 48.7322,
-      map_lng: mapLng ?? 1.3664,
+      // Laissées vides quand elles ne sont pas fournies. Le défaut était la
+      // mairie de Dreux, héritée du temps où la plateforme n'avait qu'une
+      // commune : pour toutes les autres, la carte s'ouvrait sur le mauvais
+      // département sans que rien ne signale l'erreur. Une valeur absente se
+      // corrige, une valeur fausse se recopie.
+      map_lat: mapLat ?? null,
+      map_lng: mapLng ?? null,
       primary_color: primaryColor ?? '#1A56A0',
     })
 
-    type DefaultCategory = { slug: string; label: string; icon: string; color: string; sort_order: number; sla_hours: number }
-    const defaultCategories: DefaultCategory[] = categories ?? [
-      { slug: 'voirie',    label: 'Voirie',    icon: '🛣️', color: '#EF4444', sort_order: 0, sla_hours: 72 },
-      { slug: 'eclairage', label: 'Éclairage', icon: '💡', color: '#F59E0B', sort_order: 1, sla_hours: 48 },
-      { slug: 'dechets',   label: 'Déchets',   icon: '🗑️', color: '#10B981', sort_order: 2, sla_hours: 48 },
-      { slug: 'autre',     label: 'Autre',     icon: '📌', color: '#6B7280', sort_order: 3, sla_hours: 168 },
-    ]
-
-    await supabaseAdmin.from('tenant_categories').insert(
-      defaultCategories.map(cat => ({ ...cat, tenant_id: tenant.id }))
-    )
+    // Aucune catégorie n'est insérée : depuis la 026 la liste nationale
+    // s'applique par défaut, et une ligne de `tenant_categories` ne sert qu'à
+    // porter une décision de la commune. Une commune neuve n'en a pris aucune.
 
     auditTenantCreated({
       tenantId: tenant.id,
