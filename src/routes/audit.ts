@@ -3,6 +3,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
 import { requireSuperAdmin } from '../middleware/roleGuard.js'
 import { AppError, forbidden } from '../middleware/errorHandler.js'
+import { readLimit } from '../lib/pagination.js'
 
 const router: ExpressRouter = Router()
 
@@ -10,7 +11,7 @@ const router: ExpressRouter = Router()
 router.get('/logs', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const page = parseInt(req.query.page as string) || 1
-    const limit = Math.min(parseInt(req.query.limit as string) || 25, 100)
+    const limit = readLimit(req.query.limit)
     const offset = (page - 1) * limit
 
     const tenantSlug = req.query.tenant as string | undefined
@@ -130,12 +131,15 @@ router.get('/stats', verifyToken, requireSuperAdmin, async (req: Request, res: R
 router.get('/actions', verifyToken, (_req: Request, res: Response) => {
   res.json({
     actions: [
+      'auth.login',
       'user.created',
       'user.invited',
       'report.status_changed',
       'report.deleted',
       'report.bulk_deleted',
       'report.service_notified',
+      'service.acknowledged',
+      'service.completed',
       'tenant.created',
       'tenant.status_changed',
       'tenant_config.updated',

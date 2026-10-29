@@ -7,21 +7,34 @@ import {
   updateRecipientSchema,
 } from '../schemas/weeklyReport.schema.js'
 import {
-  generateAndSendWeeklyReport,
+  sendWeeklyReport,
   generateReportPreview,
 } from '../lib/weeklyReportGenerator.js'
-import { requireTenantAdmin } from '../middleware/roleGuard.js'
-import { AppError, notFound } from '../middleware/errorHandler.js'
+import { requireTenantAdmin, requireTeamMember } from '../middleware/roleGuard.js'
+import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
 
 const router: ExpressRouter = Router()
 
-router.use(verifyToken, requireTenantAdmin)
+/**
+ * Lire n'est pas envoyer.
+ *
+ * Tout l'écran exigeait `admin`. Or la synthèse hebdomadaire est justement ce
+ * qu'un élu ou un responsable de service vient consulter : c'est le seul
+ * document de la plateforme qui résume la semaine en une page. L'**envoyer**,
+ * en revanche, écrit à des destinataires au nom de la commune, et **gérer la
+ * liste** décide à qui elle écrira chaque semaine — les deux engagent la
+ * collectivité.
+ */
+router.use(verifyToken)
 
 // GET /api/admin/weekly-report/preview
-router.get('/weekly-report/preview', async (req, res, next: NextFunction) => {
+router.get('/weekly-report/preview', requireTeamMember, async (req, res, next: NextFunction) => {
   try {
-    const tenantId = req.tenant?.id
-    const { stats, html } = await generateReportPreview(tenantId)
+    // Une commune est désormais obligatoire : un aperçu sans elle agrégeait
+    // toutes les communes de la plateforme dans le même e-mail.
+    if (!req.tenant?.id) throw badRequest('Commune requise.')
+
+    const { stats, html } = await generateReportPreview(req.tenant.id)
     res.json({ stats, html })
   } catch (err) {
     next(err)
@@ -29,9 +42,11 @@ router.get('/weekly-report/preview', async (req, res, next: NextFunction) => {
 })
 
 // POST /api/admin/weekly-report/send
-router.post('/weekly-report/send', async (_req, res, next: NextFunction) => {
+router.post('/weekly-report/send', requireTenantAdmin, async (req, res, next: NextFunction) => {
   try {
-    const stats = await generateAndSendWeeklyReport()
+    if (!req.tenant?.id) throw badRequest('Commune requise.')
+
+    const stats = await sendWeeklyReport(req.tenant.id)
     res.json({ success: true, message: 'Rapport envoyé avec succès', stats })
   } catch (err) {
     next(err)
@@ -39,7 +54,7 @@ router.post('/weekly-report/send', async (_req, res, next: NextFunction) => {
 })
 
 // GET /api/admin/weekly-report/recipients
-router.get('/weekly-report/recipients', async (req, res, next: NextFunction) => {
+router.get('/weekly-report/recipients', requireTeamMember, async (req, res, next: NextFunction) => {
   try {
     let query = supabaseAdmin
       .from('weekly_report_recipients')
@@ -58,7 +73,7 @@ router.get('/weekly-report/recipients', async (req, res, next: NextFunction) => 
 })
 
 // POST /api/admin/weekly-report/recipients
-router.post('/weekly-report/recipients', validate(addRecipientSchema), async (req, res, next: NextFunction) => {
+router.post('/weekly-report/recipients', requireTenantAdmin, validate(addRecipientSchema), async (req, res, next: NextFunction) => {
   try {
     const { email, name, role } = req.body
 
@@ -88,7 +103,7 @@ router.post('/weekly-report/recipients', validate(addRecipientSchema), async (re
 })
 
 // PATCH /api/admin/weekly-report/recipients/:id
-router.patch('/weekly-report/recipients/:id', validate(updateRecipientSchema), async (req, res, next: NextFunction) => {
+router.patch('/weekly-report/recipients/:id', requireTenantAdmin, validate(updateRecipientSchema), async (req, res, next: NextFunction) => {
   try {
     const { id } = req.params
     const { email, name, role, is_active } = req.body
@@ -117,7 +132,7 @@ router.patch('/weekly-report/recipients/:id', validate(updateRecipientSchema), a
 })
 
 // DELETE /api/admin/weekly-report/recipients/:id
-router.delete('/weekly-report/recipients/:id', async (req, res, next: NextFunction) => {
+router.delete('/weekly-report/recipients/:id', requireTenantAdmin, async (req, res, next: NextFunction) => {
   try {
     const { id } = req.params
 

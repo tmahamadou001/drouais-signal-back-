@@ -5,9 +5,9 @@ import {
   createCitizenComment,
   getUnreadCount,
 } from './comments.handler.js'
-import { verifyToken } from '../../middleware/auth.js'
+import { verifyToken, verifyTokenOptional } from '../../middleware/auth.js'
 import {
-  requireTenantAdmin,
+  requireAgent,
 } from '../../middleware/roleGuard.js'
 import { commentsLimiter } from '../../middleware/rateLimits.js'
 
@@ -15,28 +15,33 @@ const router: Router = Router({ mergeParams: true })
 // mergeParams pour accéder à :reportId depuis le router parent
 
 // GET /api/reports/:reportId/comments
-// → Accessible au citoyen auteur + agents
+// → Agents de la commune, et auteur du signalement
+//
+// `verifyTokenOptional` : l'auteur d'un signalement déposé sans compte n'a pas
+// forcément de session. Il prouve son droit avec l'en-tête `X-Report-Token`,
+// le jeton de suivi que le serveur lui a remis une fois à la création.
 router.get(
   '/',
-  verifyToken,
+  verifyTokenOptional,
   getComments
 )
 
 // POST /api/reports/:reportId/comments/agent
-// → Agents et admins uniquement
+// → Agents et admins. Répondre à un habitant est du traitement, pas du
+//   réglage : c'est le geste quotidien d'un technicien terrain.
 router.post(
   '/agent',
   verifyToken,
-  requireTenantAdmin,
+  requireAgent,
   commentsLimiter,
   createAgentComment
 )
 
 // POST /api/reports/:reportId/comments/citizen
-// → Citoyen connecté uniquement
+// → Auteur du signalement, par son compte ou son jeton de suivi
 router.post(
   '/citizen',
-  verifyToken,
+  verifyTokenOptional,
   commentsLimiter,
   createCitizenComment
 )

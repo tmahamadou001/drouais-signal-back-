@@ -1,58 +1,73 @@
-import { logoImg } from './brand.js'
+import { logoImg, EMAIL_COLORS } from './brand.js'
+
+/**
+ * Les teintes de cet e-mail, prises dans la palette de la plateforme.
+ *
+ * Elles étaient proches sans être les mêmes : un gris ardoise ici, un gris
+ * neutre dans l'e-mail de commentaire, et deux messages de la même commune
+ * ouverts côte à côte n'avaient pas l'air d'en venir.
+ */
 const COLORS = {
-  primary: '#1A56A0',
-  success: '#1D9E75',
-  warning: '#EF9F27',
-  background: '#F9FAFB',
-  white: '#FFFFFF',
-  text: '#1F2937',
-  textLight: '#6B7280',
-  border: '#E5E7EB',
+  primary:    EMAIL_COLORS.brand700,
+  success:    EMAIL_COLORS.success,
+  warning:    EMAIL_COLORS.progressDot,
+  background: EMAIL_COLORS.canvas,
+  white:      EMAIL_COLORS.white,
+  text:       EMAIL_COLORS.ink,
+  textLight:  EMAIL_COLORS.muted,
+  border:     EMAIL_COLORS.line,
 }
 
 const STATUS_CONFIG = {
+  /**
+   * Transmis à un service extérieur (migration 034).
+   *
+   * Le message ne promet pas d'intervention : l'e-mail est parti, personne n'a
+   * encore répondu. Dire « pris en charge » ici était la promesse que le
+   * statut faisait à tort avant qu'on le sépare en deux.
+   */
+  transmis: {
+    label: 'Transmis au service',
+    color: EMAIL_COLORS.progressFg,
+    bgColor: EMAIL_COLORS.progressBg,
+    message: 'Votre signalement a été transmis au service compétent de la commune. Vous serez prévenu dès qu’il est pris en charge.',
+    cta: 'Suivre mon signalement',
+  },
   pris_en_charge: {
     label: 'Pris en charge',
-    emoji: '🔧',
-    color: COLORS.warning,
-    bgColor: '#FFFBEB',
+    color: EMAIL_COLORS.progressFg,
+    bgColor: EMAIL_COLORS.progressBg,
     message: 'Bonne nouvelle ! Vos agents municipaux ont pris en charge votre signalement et vont intervenir prochainement.',
     cta: 'Suivre mon signalement',
   },
   resolu: {
     label: 'Résolu',
-    emoji: '✅',
-    color: COLORS.success,
-    bgColor: '#ECFDF5',
+    color: EMAIL_COLORS.doneFg,
+    bgColor: EMAIL_COLORS.doneBg,
     message: 'Votre signalement a été traité et résolu par les services municipaux. Merci pour votre contribution à l\'amélioration de votre ville !',
     cta: 'Voir la résolution',
   },
   en_attente: {
     label: 'En attente',
-    emoji: '⏳',
-    color: '#888780',
-    bgColor: '#F9FAFB',
+    color: EMAIL_COLORS.pendingFg,
+    bgColor: EMAIL_COLORS.pendingBg,
     message: 'Votre signalement est en attente de traitement par les services municipaux.',
     cta: 'Voir mon signalement',
   },
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
-  voirie: 'Voirie',
-  eclairage: 'Éclairage',
-  dechets: 'Déchets',
-  autre: 'Autre',
-}
-
 interface StatusEmailParams {
   reportTitle: string
   reportId: string
-  newStatus: 'en_attente' | 'pris_en_charge' | 'resolu'
-  category: string
+  newStatus: 'en_attente' | 'transmis' | 'pris_en_charge' | 'resolu'
+  /** Libellé déjà résolu par l'appelant — voir `services/categoryService.ts`. */
+  categoryLabel: string
   addressApprox: string | null
   photoUrl: string | null
   createdAt: string
   frontendUrl: string
+  /** Lien de désabonnement signé, identique à celui de l'en-tête `List-Unsubscribe`. */
+  unsubscribeUrl: string
   cityName?: string
   isAnonymous?: boolean
   anonymousToken?: string | null
@@ -60,7 +75,7 @@ interface StatusEmailParams {
 
 export const buildStatusEmail = (params: StatusEmailParams): string => {
   const config = STATUS_CONFIG[params.newStatus]
-  const categoryLabel = CATEGORY_LABELS[params.category] || params.category
+  const categoryLabel = params.categoryLabel
   const reportUrl = params.isAnonymous && params.anonymousToken
     ? `${params.frontendUrl}/signalement/suivi/${params.anonymousToken}`
     : `${params.frontendUrl}/signalement/${params.reportId}`
@@ -110,7 +125,6 @@ export const buildStatusEmail = (params: StatusEmailParams): string => {
           <tr>
             <td style="padding: 32px 32px 24px 32px; text-align: center;">
               <div style="display: inline-block; background-color: ${config.bgColor}; border: 2px solid ${config.color}; border-radius: 8px; padding: 12px 24px;">
-                <span style="font-size: 24px; margin-right: 8px;">${config.emoji}</span>
                 <span style="font-size: 16px; font-weight: 700; color: ${config.color};">${config.label}</span>
               </div>
             </td>
@@ -146,25 +160,28 @@ export const buildStatusEmail = (params: StatusEmailParams): string => {
                   <td style="padding: 20px;">
                     <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                       <tr>
-                        <td style="padding-bottom: 12px;">
-                          <span style="font-size: 18px; font-weight: 600; color: ${COLORS.text};">📋 ${params.reportTitle}</span>
+                        <td style="padding-bottom: 14px;">
+                          <span style="font-size: 18px; font-weight: 600; color: ${COLORS.text};">${params.reportTitle}</span>
                         </td>
                       </tr>
                       ${params.addressApprox ? `
                       <tr>
                         <td style="padding-bottom: 8px;">
-                          <span style="font-size: 14px; color: ${COLORS.textLight};">📍 ${params.addressApprox}</span>
+                          <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: ${EMAIL_COLORS.faint};">ADRESSE</span><br />
+                          <span style="font-size: 14px; color: ${COLORS.textLight};">${params.addressApprox}</span>
                         </td>
                       </tr>
                       ` : ''}
                       <tr>
                         <td style="padding-bottom: 8px;">
-                          <span style="font-size: 14px; color: ${COLORS.textLight};">🏷️ ${categoryLabel}</span>
+                          <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: ${EMAIL_COLORS.faint};">CATÉGORIE</span><br />
+                          <span style="font-size: 14px; color: ${COLORS.textLight};">${categoryLabel}</span>
                         </td>
                       </tr>
                       <tr>
                         <td>
-                          <span style="font-size: 14px; color: ${COLORS.textLight};">📅 Signalé le ${formattedDate}</span>
+                          <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: ${EMAIL_COLORS.faint};">SIGNALÉ LE</span><br />
+                          <span style="font-size: 14px; color: ${COLORS.textLight};">${formattedDate}</span>
                         </td>
                       </tr>
                     </table>
@@ -217,8 +234,8 @@ export const buildStatusEmail = (params: StatusEmailParams): string => {
               <p style="margin: 0 0 16px 0; font-size: 12px; color: ${COLORS.textLight};">
                 Vous avez signalé ce problème le ${formattedDate}
               </p>
-              <a href="${params.frontendUrl}" style="font-size: 12px; color: ${COLORS.textLight}; text-decoration: underline;">
-                Gérer mes notifications
+              <a href="${params.unsubscribeUrl}" style="font-size: 12px; color: ${COLORS.textLight}; text-decoration: underline;">
+                Ne plus recevoir ces e-mails
               </a>
             </td>
           </tr>

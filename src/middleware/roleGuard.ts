@@ -72,7 +72,29 @@ export function requireRole(...allowedRoles: UserRole[]) {
   }
 }
 
+/**
+ * Les trois niveaux d'accès au back-office.
+ *
+ * Ils décrivent le partage habituel dans une mairie, et non une hiérarchie
+ * abstraite :
+ *
+ *  - **`requireTeamMember`** — *voir*. Les signalements, la carte de chaleur,
+ *    les statistiques, l'export. Aucune écriture. C'est ce que fait un élu ou
+ *    un stagiaire à qui l'on ouvre la plateforme sans lui confier le
+ *    traitement ;
+ *  - **`requireAgent`** — *traiter*. Faire avancer un statut, répondre à un
+ *    habitant, confier à un service. Le travail quotidien du technicien
+ *    terrain ;
+ *  - **`requireTenantAdmin`** — *régler*. Les délais, les destinataires de
+ *    service, les catégories, l'équipe, la suppression. Ce qui engage la
+ *    commune au-delà d'un signalement.
+ *
+ * `requireAgent` n'était utilisé par aucune route : toutes les écritures
+ * exigeaient `admin`, et le routeur web exigeait `isAdmin`. Un membre invité
+ * comme agent recevait donc son e-mail, choisissait son mot de passe, et se
+ * faisait éjecter à la connexion — le rôle n'était qu'une pastille de couleur.
+ */
 export const requireSuperAdmin = requireRole('super_admin')
 export const requireTenantAdmin = requireRole('super_admin', 'admin')
 export const requireAgent = requireRole('super_admin', 'admin', 'agent')
-export const requireObserver = requireRole('super_admin', 'admin', 'agent', 'observer')
+export const requireTeamMember = requireRole('super_admin', 'admin', 'agent', 'observer')

@@ -2,7 +2,13 @@ export interface Tenant {
   id: string
   slug: string
   name: string
-  status: 'trial' | 'active' | 'suspended' | 'demo'
+  /**
+   * `prospect` est le statut d'une commune non cliente dont des habitants
+   * signalent déjà (migration 025). C'est une coquille : pas de configuration,
+   * pas d'agents, et rien de publié. Il manquait ici, ce qui laissait le
+   * compilateur valider `tenant.status !== 'prospect'` comme toujours vrai.
+   */
+  status: 'trial' | 'active' | 'suspended' | 'demo' | 'prospect'
   plan: 'starter' | 'agglo' | 'enterprise'
   contact_name?: string
   contact_email?: string
@@ -17,23 +23,21 @@ export interface TenantConfig {
   id: string
   tenant_id: string
   city_name: string
-  city_population?: number
-  department_code?: string
-  region?: string
   primary_color: string
-  logo_url?: string
-  welcome_message?: string
-  map_lat: number
-  map_lng: number
-  map_zoom: number
-  feature_anonymous_reports: boolean
+  /**
+   * Le cadrage des cartes du back-office, hérité de la mairie. `null` pour une
+   * commune prospect, que personne n'a paramétrée.
+   */
+  map_lat: number | null
+  map_lng: number | null
+  map_zoom: number | null
   feature_votes: boolean
   feature_ai_analysis: boolean
   feature_weekly_report: boolean
   feature_heatmap: boolean
+  /** Quand part le rapport hebdomadaire : jour (1 = lundi) et heure locale. */
   weekly_report_day: number
   weekly_report_hour: number
-  weekly_report_emails: string[]
 }
 
 export interface TenantCategory {

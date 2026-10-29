@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { upload } from '../middleware/upload.js'
 import { verifyToken } from '../middleware/auth.js'
-import { requireTenantAdmin } from '../middleware/roleGuard.js'
+import { requireAgent } from '../middleware/roleGuard.js'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import crypto from 'crypto'
 import { badRequest, notFound } from '../middleware/errorHandler.js'
@@ -12,7 +12,7 @@ const router: Router = Router()
 router.post(
   '/resolution-photo',
   verifyToken,
-  requireTenantAdmin,
+  requireAgent,
   upload.single('photo'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

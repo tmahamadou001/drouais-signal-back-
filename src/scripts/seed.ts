@@ -13,9 +13,17 @@ const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 })
 
+/**
+ * Les slugs sont ceux de la **taxonomie nationale** (migration 026).
+ *
+ * Ils portaient encore les slugs locaux d'avant — `eclairage`, `dechets` — que
+ * `reports.category` ne connaît plus : les jeux de test entraient donc des
+ * signalements dont aucune catégorie ne retrouvait le libellé, et l'écran de
+ * performance les comptait à zéro.
+ */
 interface SeedReport {
   title: string
-  category: 'voirie' | 'eclairage' | 'dechets' | 'autre'
+  category: 'voirie' | 'mobilier' | 'proprete' | 'autre'
   description: string
   lat: number
   lng: number
@@ -35,7 +43,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Lampadaire éteint depuis 2 semaines',
-    category: 'eclairage',
+    category: 'mobilier',
     description: 'Le lampadaire côté pair ne fonctionne plus. La portion de rue est très sombre le soir.',
     lat: 48.7371,
     lng: 1.3668,
@@ -44,7 +52,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Dépôt sauvage d\'encombrants',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Matelas, meubles et cartons abandonnés sur le trottoir depuis plusieurs jours.',
     lat: 48.7342,
     lng: 1.3621,
@@ -62,7 +70,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Éclairage public clignotant',
-    category: 'eclairage',
+    category: 'mobilier',
     description: 'Trois lampadaires consécutifs clignotent de manière irrégulière. Gênant pour la circulation.',
     lat: 48.7358,
     lng: 1.3690,
@@ -71,7 +79,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Poubelles débordantes',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Les bacs de tri sont pleins et débordent. Sacs poubelles au sol attirant les nuisibles.',
     lat: 48.7348,
     lng: 1.3656,
@@ -89,7 +97,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Dépôt de gravats sur la voie publique',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Gravats de chantier déposés illégalement sur le trottoir. Passage piéton impossible.',
     lat: 48.7339,
     lng: 1.3642,
@@ -125,7 +133,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Lampadaire penché suite à un accident',
-    category: 'eclairage',
+    category: 'mobilier',
     description: 'Un véhicule a percuté le poteau d\'éclairage qui penche dangereusement vers la route.',
     lat: 48.7352,
     lng: 1.3630,
@@ -210,7 +218,7 @@ const reports: SeedReport[] = [
   // Zone 2 — Quartier Bords de l'Eure (10 signalements)
   {
     title: 'Éclairage défaillant',
-    category: 'eclairage',
+    category: 'mobilier',
     description: 'Plusieurs lampadaires ne fonctionnent plus.',
     lat: 48.7280,
     lng: 1.3720,
@@ -219,7 +227,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Lampadaire cassé',
-    category: 'eclairage',
+    category: 'mobilier',
     description: 'Poteau d\'éclairage endommagé.',
     lat: 48.72805,
     lng: 1.37205,
@@ -228,7 +236,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Zone sombre',
-    category: 'eclairage',
+    category: 'mobilier',
     description: 'Absence totale d\'éclairage sur 50 mètres.',
     lat: 48.7281,
     lng: 1.3721,
@@ -237,7 +245,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Ampoule grillée',
-    category: 'eclairage',
+    category: 'mobilier',
     description: 'Lampadaire éteint depuis plusieurs semaines.',
     lat: 48.72795,
     lng: 1.37195,
@@ -246,7 +254,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Dépôt de déchets verts',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Tas de branches et feuilles non ramassées.',
     lat: 48.7279,
     lng: 1.3719,
@@ -255,7 +263,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Poubelles renversées',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Conteneurs renversés, déchets éparpillés.',
     lat: 48.72815,
     lng: 1.37215,
@@ -264,7 +272,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Encombrants abandonnés',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Vieux meubles déposés sur le trottoir.',
     lat: 48.7282,
     lng: 1.3722,
@@ -273,7 +281,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Décharge sauvage',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Accumulation de déchets divers.',
     lat: 48.72785,
     lng: 1.37185,
@@ -282,7 +290,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Éclairage intermittent',
-    category: 'eclairage',
+    category: 'mobilier',
     description: 'Lampadaire qui clignote de façon aléatoire.',
     lat: 48.7283,
     lng: 1.3723,
@@ -291,7 +299,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Sacs poubelles éventrés',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Sacs déchirés par des animaux, déchets au sol.',
     lat: 48.72775,
     lng: 1.37175,
@@ -367,7 +375,7 @@ const reports: SeedReport[] = [
   // Zone 4 — Zone industrielle nord (5 signalements déchets)
   {
     title: 'Dépôt sauvage industriel',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Déchets industriels abandonnés.',
     lat: 48.7400,
     lng: 1.3800,
@@ -376,7 +384,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Conteneurs débordants',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Bennes à ordures pleines et débordantes.',
     lat: 48.74005,
     lng: 1.38005,
@@ -385,7 +393,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Gravats abandonnés',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Tas de gravats de chantier non évacués.',
     lat: 48.7401,
     lng: 1.3801,
@@ -394,7 +402,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Décharge illégale',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Accumulation importante de déchets divers.',
     lat: 48.73995,
     lng: 1.37995,
@@ -403,7 +411,7 @@ const reports: SeedReport[] = [
   },
   {
     title: 'Encombrants professionnels',
-    category: 'dechets',
+    category: 'proprete',
     description: 'Matériel professionnel usagé abandonné.',
     lat: 48.7399,
     lng: 1.3799,

@@ -53,6 +53,11 @@ vi.mock('../../lib/authHelpers.js', () => ({
   getAuthEmailMap: vi.fn().mockResolvedValue(new Map()),
 }))
 
+vi.mock('../../services/categoryService.js', () => ({
+  resolveCategories: vi.fn(),
+  resolveActiveCategories: vi.fn(),
+}))
+
 vi.mock('../../services/auditService.js', () => ({
   createAuditLog: vi.fn().mockResolvedValue(undefined),
   auditUserCreated: vi.fn().mockResolvedValue(undefined),
@@ -63,6 +68,22 @@ vi.mock('../../services/auditService.js', () => ({
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
 import { createAuditLog } from '../../services/auditService.js'
 import tenantRouter from '../../routes/tenant.js'
+import { resolveCategories } from '../../services/categoryService.js'
+
+/** Une catégorie telle que `resolveCategories` la rend. */
+const RESOLVED_VOIRIE = {
+  slug: 'voirie',
+  label: 'Voirie',
+  description: 'nid-de-poule, trottoir déformé',
+  icon: '🚧',
+  color: null,
+  is_active: true,
+  sort_order: 6,
+  sla_hours: 168,
+  service_name: null,
+  service_emails: [] as string[],
+  is_default: false,
+}
 
 const TENANT = {
   id: 'tenant-1',
@@ -104,31 +125,84 @@ describe('PUT /api/tenant/categories', () => {
     expect(res.body.error).toBe('bad_request')
   })
 
-  it('returns 200 and upserts categories', async () => {
-    const upsertResult = [{ id: 'cat-1', slug: 'voirie', label: 'Voirie' }]
-    const select = vi.fn().mockResolvedValue({ data: upsertResult, error: null })
+  /**
+   * Le décor : la liste nationale en base, l'upsert, et la relecture rendue
+   * au client. `resolveCategories` est simulée parce que c'est elle que la
+   * route rend désormais — pas le résultat brut de l'upsert.
+   */
+  function mockCategoryWrite() {
+    const select = vi.fn().mockResolvedValue({ data: [], error: null })
     const upsert = vi.fn().mockReturnValue({ select })
-    vi.mocked(supabaseAdmin.from).mockReturnValue({ upsert } as any)
+
+    vi.mocked(supabaseAdmin.from).mockImplementation(((table: string) => {
+      if (table === 'categories') {
+        return {
+          select: vi.fn().mockResolvedValue({
+            data: [{ slug: 'voirie', label_default: 'Voirie et chaussée' }],
+            error: null,
+          }),
+        }
+      }
+      return { upsert }
+    }) as never)
+
+    vi.mocked(resolveCategories).mockResolvedValue([RESOLVED_VOIRIE])
+
+    return { upsert }
+  }
+
+  it('returns the resolved list after upserting', async () => {
+    mockCategoryWrite()
 
     const res = await request(makeApp())
       .put('/api/tenant/categories')
-      .send({ categories: [{ slug: 'voirie', label: 'Voirie', icon: '🛣️', color: '#EF4444' }] })
+      .send({ categories: [{ slug: 'voirie', label: 'Voirie' }] })
 
     expect(res.status).toBe(200)
-    expect(res.body).toEqual(upsertResult)
+    expect(res.body).toEqual([RESOLVED_VOIRIE])
+  })
+
+  it('rejects a slug absent from the national list', async () => {
+    mockCategoryWrite()
+
+    const res = await request(makeApp())
+      .put('/api/tenant/categories')
+      .send({ categories: [{ slug: 'cat_1775827638804', label: 'Urbanisme' }] })
+
+    // C'est ce que fabriquait l'ancien éditeur : un slug horodaté, invisible de
+    // l'IA comme de la validation, et que personne ne voyait échouer.
+    expect(res.status).toBe(400)
+    expect(res.body.message).toContain('cat_1775827638804')
+  })
+
+  it('writes the canonical slug into category_slug', async () => {
+    const { upsert } = mockCategoryWrite()
+
+    await request(makeApp())
+      .put('/api/tenant/categories')
+      .send({ categories: [{ slug: 'voirie', label: 'Voirie' }] })
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ category_slug: 'voirie' })]),
+      expect.objectContaining({ onConflict: 'tenant_id,category_slug' })
+    )
+  })
+
+  it('falls back to the national label when the commune leaves it blank', async () => {
+    const { upsert } = mockCategoryWrite()
+
+    await request(makeApp())
+      .put('/api/tenant/categories')
+      .send({ categories: [{ slug: 'voirie', label: '   ' }] })
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ label: 'Voirie et chaussée' })]),
+      expect.anything()
+    )
   })
 
   it('persists service_name and service_emails in upsert payload', async () => {
-    const upsertResult = [{
-      id: 'cat-1',
-      slug: 'voirie',
-      label: 'Voirie',
-      service_name: 'Service Voirie',
-      service_emails: ['voirie@dreux.fr', 'technique@dreux.fr'],
-    }]
-    const select = vi.fn().mockResolvedValue({ data: upsertResult, error: null })
-    const upsert = vi.fn().mockReturnValue({ select })
-    vi.mocked(supabaseAdmin.from).mockReturnValue({ upsert } as any)
+    const { upsert } = mockCategoryWrite()
 
     const res = await request(makeApp())
       .put('/api/tenant/categories')
@@ -136,16 +210,12 @@ describe('PUT /api/tenant/categories', () => {
         categories: [{
           slug:          'voirie',
           label:         'Voirie',
-          icon:          '🛣️',
-          color:         '#EF4444',
           serviceName:   'Service Voirie',
           serviceEmails: ['voirie@dreux.fr', 'technique@dreux.fr'],
         }],
       })
 
     expect(res.status).toBe(200)
-
-    // Check that the upsert received the service fields
     expect(upsert).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({
@@ -158,14 +228,11 @@ describe('PUT /api/tenant/categories', () => {
   })
 
   it('upserts with empty service_emails array when not provided', async () => {
-    const upsertResult = [{ id: 'cat-1', slug: 'voirie', label: 'Voirie', service_emails: [] }]
-    const select = vi.fn().mockResolvedValue({ data: upsertResult, error: null })
-    const upsert = vi.fn().mockReturnValue({ select })
-    vi.mocked(supabaseAdmin.from).mockReturnValue({ upsert } as any)
+    const { upsert } = mockCategoryWrite()
 
     const res = await request(makeApp())
       .put('/api/tenant/categories')
-      .send({ categories: [{ slug: 'voirie', label: 'Voirie', icon: '🛣️', color: '#EF4444' }] })
+      .send({ categories: [{ slug: 'voirie', label: 'Voirie' }] })
 
     expect(res.status).toBe(200)
 
@@ -341,12 +408,38 @@ describe('POST /api/tenant/users/:userId/resend-invite', () => {
 describe('PATCH /api/tenant/users/:userId', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  /**
+   * The member as they stand today, read before any demotion or suspension:
+   * a commune must not be able to lose its last administrator.
+   *
+   * `admins` is how many *other* active admins the commune has.
+   */
+  function mockMember(
+    update: ReturnType<typeof vi.fn>,
+    current: { role: string; is_active: boolean } | null,
+    admins = 1
+  ) {
+    vi.mocked(supabaseAdmin.from).mockReturnValue({
+      update,
+      select: vi.fn().mockImplementation((_columns: string, options?: { head?: boolean }) => {
+        // The admin head-count ends the chain on `.neq`, the member lookup on
+        // `.single` — two different shapes off the same `select`.
+        const chain: any = {
+          eq: () => chain,
+          neq: () => Promise.resolve({ count: admins }),
+          single: async () => ({ data: current, error: current ? null : { message: 'not found' } }),
+        }
+        return options?.head ? chain : chain
+      }),
+    } as any)
+  }
+
   it('returns 404 when user is not found in tenant', async () => {
     const single = vi.fn().mockResolvedValue({ data: null, error: { message: 'not found' } })
     const eq2    = vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single }) })
     const eq1    = vi.fn().mockReturnValue({ eq: eq2 })
     const update = vi.fn().mockReturnValue({ eq: eq1 })
-    vi.mocked(supabaseAdmin.from).mockReturnValue({ update } as any)
+    mockMember(update, { role: 'agent', is_active: true })
 
     const res = await request(makeApp())
       .patch('/api/tenant/users/ghost-user')
@@ -356,13 +449,73 @@ describe('PATCH /api/tenant/users/:userId', () => {
     expect(res.body.error).toBe('not_found')
   })
 
+  /**
+   * Nothing stopped an administrator demoting themselves, or suspending the
+   * last of their peers: the commune then lost the right to invite anyone, to
+   * change any setting, or to hand over — and needed a super administrator to
+   * unblock it.
+   */
+  it('refuses to demote the last administrator', async () => {
+    const update = vi.fn()
+    mockMember(update, { role: 'admin', is_active: true }, 0)
+
+    const res = await request(makeApp())
+      .patch('/api/tenant/users/user-abc')
+      .send({ role: 'agent' })
+
+    expect(res.status).toBe(409)
+    expect(res.body.error).toBe('last_admin')
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('refuses to suspend the last administrator', async () => {
+    const update = vi.fn()
+    mockMember(update, { role: 'admin', is_active: true }, 0)
+
+    const res = await request(makeApp())
+      .patch('/api/tenant/users/user-abc')
+      .send({ isActive: false })
+
+    expect(res.status).toBe(409)
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('allows demoting an administrator when another one remains', async () => {
+    const single = vi.fn().mockResolvedValue({ data: { user_id: 'user-abc', role: 'agent' }, error: null })
+    const eq2    = vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single }) })
+    const eq1    = vi.fn().mockReturnValue({ eq: eq2 })
+    const update = vi.fn().mockReturnValue({ eq: eq1 })
+    mockMember(update, { role: 'admin', is_active: true }, 1)
+
+    const res = await request(makeApp())
+      .patch('/api/tenant/users/user-abc')
+      .send({ role: 'agent' })
+
+    expect(res.status).toBe(200)
+  })
+
+  /** Renaming somebody takes nothing away: no head-count needed. */
+  it('leaves a plain profile edit alone', async () => {
+    const single = vi.fn().mockResolvedValue({ data: { user_id: 'user-abc' }, error: null })
+    const eq2    = vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single }) })
+    const eq1    = vi.fn().mockReturnValue({ eq: eq2 })
+    const update = vi.fn().mockReturnValue({ eq: eq1 })
+    mockMember(update, { role: 'admin', is_active: true }, 0)
+
+    const res = await request(makeApp())
+      .patch('/api/tenant/users/user-abc')
+      .send({ jobTitle: 'Technicien terrain' })
+
+    expect(res.status).toBe(200)
+  })
+
   it('triggers audit log when role is changed', async () => {
     const updatedUser = { id: 'tu-1', user_id: 'user-abc', role: 'observer' }
     const single = vi.fn().mockResolvedValue({ data: updatedUser, error: null })
     const eq2    = vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single }) })
     const eq1    = vi.fn().mockReturnValue({ eq: eq2 })
     const update = vi.fn().mockReturnValue({ eq: eq1 })
-    vi.mocked(supabaseAdmin.from).mockReturnValue({ update } as any)
+    mockMember(update, { role: 'agent', is_active: true })
 
     await request(makeApp())
       .patch('/api/tenant/users/user-abc')

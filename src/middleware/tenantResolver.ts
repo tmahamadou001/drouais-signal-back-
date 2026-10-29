@@ -48,11 +48,47 @@ export function invalidateTenantCache(slug: string): void {
   tenantCache.delete(slug)
 }
 
+/**
+ * Routes qui doivent rester joignables avec un slug inconnu.
+ *
+ * L'annuaire des communes et la résolution par position sont précisément ce
+ * qu'un client interroge quand son slug est périmé — une commune renommée, une
+ * base changée, un cache d'une version antérieure. Les faire échouer sur ce
+ * même slug enferme le client dans son erreur : le seul appel capable de le
+ * sortir de là devient le seul qu'il ne peut plus passer.
+ *
+ * Constaté en testant l'app contre un serveur local : elle portait un slug que
+ * la base ne connaissait pas, et « Ville introuvable » lui revenait sur la
+ * requête censée lui apprendre où elle se trouvait.
+ */
+const TENANT_AGNOSTIC = [
+  '/tenants/resolve',
+  '/tenants/waitlist',
+  // L'annuaire des communes consultables : il sert précisément à en choisir
+  // une, donc exiger d'en avoir déjà une serait circulaire.
+  '/tenants/public',
+  /**
+   * Les liens remis aux services extérieurs.
+   *
+   * Celui qui clique n'a ni compte, ni sous-domaine, ni en-tête : il ouvre un
+   * lien dans un e-mail. Le jeton porte déjà sa commune, et c'est lui qui fait
+   * autorité — un en-tête qui le contredirait n'aurait aucune raison d'être cru.
+   */
+  '/service/',
+]
+
 export async function resolveTenant(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  // `req.path` est relatif au point de montage (`/api/`).
+  const path = req.path ?? ''
+  if (TENANT_AGNOSTIC.some((route) => path.startsWith(route))) {
+    next()
+    return
+  }
+
   // Priorité 1 : header X-Tenant-Slug
   let slug = req.headers['x-tenant-slug'] as string | undefined
 

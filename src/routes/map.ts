@@ -9,7 +9,7 @@ interface MapMarker {
   id: string
   lat: number
   lng: number
-  status: 'en_attente' | 'pris_en_charge' | 'resolu'
+  status: 'en_attente' | 'transmis' | 'pris_en_charge' | 'resolu'
   category: string
   title: string
   vote_count: number
@@ -22,6 +22,9 @@ router.get('/markers', async (req: Request, res: Response, next: NextFunction) =
     let query = supabaseAdmin
       .from('reports')
       .select('id, lat, lng, status, category, title, vote_count')
+      // Même règle que la liste publique : rien de ce qui vient d'une commune
+      // prospect n'apparaît sur la carte.
+      .eq('is_published', true)
       .not('lat', 'is', null)
       .not('lng', 'is', null)
       .order('created_at', { ascending: false })
