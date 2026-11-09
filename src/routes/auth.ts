@@ -118,9 +118,20 @@ router.post('/register', authLimiter, validate(registerSchema), async (req: Requ
     if (error) {
       rejectWeakPassword(error)
 
-      // Une adresse déjà prise ne se dit pas : ce serait la même fuite que
-      // ci-dessus, par une autre porte. Supabase rend d'ailleurs un utilisateur
-      // sans identité dans ce cas, plutôt qu'une erreur.
+      /**
+       * Le client ne voit qu'un refus générique, et c'est voulu : une adresse
+       * déjà prise ne se dit pas, ce serait la même fuite que pour `login`,
+       * par une autre porte.
+       *
+       * Mais tout n'est pas une erreur de saisie. GoTrue répond aussi par une
+       * erreur quand **son envoi d'e-mail échoue** — SMTP mal configuré, quota
+       * du service par défaut atteint — et cette panne-là est opérationnelle,
+       * pas utilisateur. Sans cette trace, elle se présentait comme un
+       * « vérifiez vos informations » adressé à quelqu'un dont les
+       * informations étaient bonnes.
+       */
+      console.error('[Auth] Inscription refusée par Supabase :', error.code ?? error.status, error.message)
+
       throw new AppError(400, 'signup_failed', 'Inscription impossible. Vérifiez vos informations.')
     }
 
