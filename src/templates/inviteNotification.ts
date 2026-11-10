@@ -1,4 +1,4 @@
-import { logoImg } from './brand.js'
+import { wordmarkImg } from './brand.js'
 const COLORS = {
   primary: '#1A56A0',
   background: '#F6F7F9',
@@ -84,10 +84,7 @@ export function buildInviteEmail(params: InviteEmailParams): { html: string; tex
           <!-- Logo -->
           <tr>
             <td align="center" style="padding-bottom:24px;">
-              <div style="display:inline-flex;align-items:center;gap:8px;">
-                ${logoImg(32, 6)}
-                <span style="font-size:18px;font-weight:700;color:${COLORS.text};">OnSignale</span>
-              </div>
+              ${wordmarkImg(26)}
             </td>
           </tr>
 
@@ -167,10 +164,7 @@ export function buildResetEmail(params: ResetEmailParams): { html: string; text:
           <!-- Logo -->
           <tr>
             <td align="center" style="padding-bottom:24px;">
-              <div style="display:inline-flex;align-items:center;gap:8px;">
-                ${logoImg(32, 6)}
-                <span style="font-size:18px;font-weight:700;color:${COLORS.text};">OnSignale</span>
-              </div>
+              ${wordmarkImg(26)}
             </td>
           </tr>
 

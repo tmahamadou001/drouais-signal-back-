@@ -40,12 +40,44 @@ const ASSET_ORIGIN = process.env.EMAIL_ASSET_URL || 'https://onsignale.fr'
 export const LOGO_URL = `${ASSET_ORIGIN}/icons/icon-192.png`
 
 /**
+ * La version **longue** de la marque : l'anneau y remplace le « O » du nom.
+ *
+ * Source de 464 × 96, affichée à la moitié, pour rester nette sur un écran
+ * retina. C'est elle qu'il faut dans un en-tête d'e-mail : la charte interdit
+ * d'écrire « OnSignale » à côté de la marque courte — deux O, l'un dessiné,
+ * l'autre composé. Les en-têtes faisaient exactement cela.
+ */
+const WORDMARK_URLS = {
+  navy: `${ASSET_ORIGIN}/icons/wordmark-navy-2x.png`,
+  white: `${ASSET_ORIGIN}/icons/wordmark-white-2x.png`,
+} as const
+
+/**
+ * Proportions du fichier : 464 × 96.
+ *
+ * Le nom ne porte pas de `@` — Cloudflare normalise `@2x` en `%402x` et répond
+ * 307. L'image finit par arriver dans un navigateur, mais un client mail qui
+ * ne suit pas les redirections sur les images affiche le texte alternatif à la
+ * place du logo, dans chaque e-mail envoyé.
+ */
+const WORDMARK_RATIO = 464 / 96
+
+/**
  * An `<img>` for the mark, at `size` CSS pixels.
  *
  * Width and height are set as attributes *and* in the style: Outlook ignores
  * the style, everything else ignores the attributes, and a logo with neither
  * loads at its natural 192 px and blows the header apart.
  */
+export function wordmarkImg(height = 24, tone: 'navy' | 'white' = 'navy'): string {
+  const width = Math.round(height * WORDMARK_RATIO)
+
+  return (
+    `<img src="${WORDMARK_URLS[tone]}" alt="OnSignale" width="${width}" height="${height}" ` +
+    `style="width:${width}px;height:${height}px;display:block;border:0;" />`
+  )
+}
+
 export function logoImg(size = 32, radius = 8): string {
   return (
     `<img src="${LOGO_URL}" alt="OnSignale" width="${size}" height="${size}" ` +

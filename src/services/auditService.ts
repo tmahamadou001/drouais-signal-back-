@@ -38,6 +38,7 @@ export type AuditAction =
   | 'report.bulk_deleted'
   | 'tenant.created'
   | 'tenant.status_changed'
+  | 'tenant.launched'
   | 'tenant_config.updated'
   | 'tenant_categories.updated'
 
@@ -277,6 +278,43 @@ export async function auditTenantStatusChanged(params: {
     metadata: {
       old_status: params.oldStatus,
       new_status: params.newStatus,
+    },
+    ipAddress: params.ipAddress,
+    userAgent: params.userAgent,
+  })
+}
+
+/**
+ * Le lancement d'une commune : ce que la bascule a réellement produit.
+ *
+ * Une entrée distincte de `tenant.status_changed`, parce qu'elle ne dit pas la
+ * même chose. L'une enregistre une décision, l'autre ses effets — combien de
+ * signalements sont devenus visibles, et combien d'habitants ont été prévenus.
+ * Ce sont les deux chiffres qu'on voudra retrouver le jour où une mairie
+ * demandera pourquoi elle n'a rien vu arriver, ou un habitant pourquoi il n'a
+ * rien reçu.
+ */
+export async function auditCommuneLaunched(params: {
+  tenantId: string
+  tenantSlug: string
+  publishedReports: number
+  waitlistNotified: number
+  waitlistFailed: number
+  activatedBy: string
+  ipAddress?: string
+  userAgent?: string
+}) {
+  await createAuditLog({
+    userId: params.activatedBy,
+    action: 'tenant.launched',
+    entityType: 'tenant',
+    entityId: params.tenantId,
+    tenantId: params.tenantId,
+    tenantSlug: params.tenantSlug,
+    metadata: {
+      published_reports: params.publishedReports,
+      waitlist_notified: params.waitlistNotified,
+      waitlist_failed: params.waitlistFailed,
     },
     ipAddress: params.ipAddress,
     userAgent: params.userAgent,

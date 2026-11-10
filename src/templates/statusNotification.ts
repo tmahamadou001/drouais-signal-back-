@@ -1,4 +1,4 @@
-import { logoImg, EMAIL_COLORS } from './brand.js'
+import { wordmarkImg, EMAIL_COLORS } from './brand.js'
 
 /**
  * Les teintes de cet e-mail, prises dans la palette de la plateforme.
@@ -106,12 +106,7 @@ export const buildStatusEmail = (params: StatusEmailParams): string => {
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
                 <tr>
                   <td style="text-align: left;">
-                    <table role="presentation" cellspacing="0" cellpadding="0" border="0">
-                      <tr>
-                        <td style="padding-right: 10px;">${logoImg(32)}</td>
-                        <td><span style="font-size: 24px; font-weight: 700; color: ${COLORS.white};">OnSignale</span></td>
-                      </tr>
-                    </table>
+                    ${wordmarkImg(26, 'white')}
                   </td>
                   <td style="text-align: right;">
                     <span style="font-size: 14px; color: rgba(255, 255, 255, 0.9); font-weight: 500;">${params.cityName ?? 'OnSignale'}</span>

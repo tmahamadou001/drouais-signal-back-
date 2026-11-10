@@ -7,6 +7,7 @@ import { verifyToken } from '../middleware/auth.js'
 import { requireTenant, invalidateTenantCache } from '../middleware/tenantResolver.js'
 import { requireTenantAdmin, requireSuperAdmin } from '../middleware/roleGuard.js'
 import { auditUserCreated, auditTenantCreated, auditTenantStatusChanged, createAuditLog } from '../services/auditService.js'
+import { launchCommune } from '../services/communeLaunchService.js'
 import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
 import { listTeam, countOtherAdmins } from '../services/teamService.js'
 import { provisionInvite } from '../services/inviteService.js'
@@ -699,7 +700,14 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
     const { tenantId } = req.params
     const { status } = req.body
 
-    const validStatuses = ['trial', 'active', 'suspended', 'demo']
+    /**
+     * `prospect` en fait partie, et il y manquait.
+     *
+     * On pouvait faire passer une commune de prospect à active, jamais
+     * l'inverse — une asymétrie non voulue, qui interdisait de défaire une
+     * activation prématurée autrement qu'en base.
+     */
+    const validStatuses = ['trial', 'active', 'suspended', 'demo', 'prospect']
     if (!validStatuses.includes(status)) {
       throw badRequest('Statut invalide.')
     }
@@ -724,6 +732,26 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
     if (error || !data) throw notFound('Tenant')
 
     invalidateTenantCache(data.slug)
+
+    /**
+     * La commune sort de l'état prospect : c'est le jour de son lancement.
+     *
+     * Deux gestes suivent, et aucun des deux ne doit pouvoir faire échouer
+     * l'activation elle-même — d'où le `.catch` sur chacun. Publier
+     * l'historique est ce qui donne à la commune quelque chose à traiter dès
+     * le premier jour ; prévenir la liste d'attente tient la promesse faite à
+     * ses habitants, qui ont laissé leur adresse pour cela.
+     */
+    if (currentTenant?.status === 'prospect' && status === 'active') {
+      void launchCommune({
+        tenantId,
+        tenantSlug: data.slug,
+        tenantName: data.name,
+        activatedBy: req.userId!,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      })
+    }
 
     if (currentTenant && currentTenant.status !== status) {
       auditTenantStatusChanged({

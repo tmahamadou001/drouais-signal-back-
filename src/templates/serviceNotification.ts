@@ -1,4 +1,4 @@
-import { logoImg } from './brand.js'
+import { wordmarkImg } from './brand.js'
 export interface ServiceNotificationParams {
   recipientEmails: string[]
   serviceName: string
@@ -53,10 +53,8 @@ export function buildServiceNotificationEmail(params: ServiceNotificationParams)
 
     <!-- Header -->
     <div style="background: #1A56A0; border-radius: 16px 16px 0 0; padding: 24px 28px;">
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 4px;">
-        ${logoImg(32)}
-        <span style="color: rgba(255,255,255,0.7); font-size: 13px; font-weight: 500;">OnSignale — ${cityName}</span>
-      </div>
+      <div style="margin-bottom: 8px;">${wordmarkImg(22, 'white')}</div>
+      <div style="color: rgba(255,255,255,0.7); font-size: 13px; font-weight: 500;">${cityName}</div>
       <h1 style="color: white; font-size: 18px; font-weight: 700; margin: 8px 0 0;">
         Nouveau signalement transmis à ${serviceName}
       </h1>
