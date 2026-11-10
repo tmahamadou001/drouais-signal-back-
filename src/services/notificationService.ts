@@ -1,3 +1,4 @@
+import { tenantWebUrl } from '../lib/tenantUrl.js'
 import { Resend } from 'resend'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { buildStatusEmail } from '../templates/statusNotification.js'
@@ -83,8 +84,20 @@ export async function sendStatusChangeNotification(
     return
   }
 
+  // Le lien de l'e-mail porte la commune, parce qu'un signalement en a une.
+  // Sans slug, il visait `onsignale.fr` — le site de présentation depuis la
+  // bascule DNS — où le client ne peut déduire aucune commune et où l'API
+  // répond « Tenant requis. »
+  let tenantSlug: string | null = null
   let cityName: string | undefined
   if (params.tenantId) {
+    const { data: tenant } = await supabaseAdmin
+      .from('tenants')
+      .select('slug')
+      .eq('id', params.tenantId)
+      .single()
+    tenantSlug = tenant?.slug ?? null
+
     const { data } = await supabaseAdmin
       .from('tenant_configs')
       .select('city_name')
@@ -106,7 +119,7 @@ export async function sendStatusChangeNotification(
     addressApprox: params.addressApprox,
     photoUrl: params.photoUrl,
     createdAt: params.createdAt,
-    frontendUrl: process.env.FRONTEND_URL || 'https://onsignale.fr',
+    frontendUrl: tenantWebUrl(tenantSlug),
     cityName,
     isAnonymous: params.isAnonymous,
     anonymousToken: params.anonymousToken,

@@ -137,3 +137,30 @@ describe('joinWaitlist', () => {
     )
   })
 })
+
+/**
+ * `tenants.reference_prefix` est `NOT NULL` depuis la migration 032. L'omettre
+ * faisait échouer l'insertion, donc `ensureProspectTenant` rendait `null`, donc
+ * tout dépôt depuis une commune non couverte répondait 503.
+ */
+describe('reference prefix of a prospect tenant', () => {
+  it('derives the prefix from the first three letters of the slug', async () => {
+    const { tenantInsert } = mockTables()
+
+    await ensureProspectTenant('28085', 'Chartres')
+
+    expect(tenantInsert).toHaveBeenCalledWith(
+      expect.objectContaining({ reference_prefix: 'CHA' })
+    )
+  })
+
+  it('never inserts a null prefix, even for a name without letters', async () => {
+    const { tenantInsert } = mockTables()
+
+    await ensureProspectTenant('97123', '123')
+
+    expect(tenantInsert).toHaveBeenCalledWith(
+      expect.objectContaining({ reference_prefix: 'ONS' })
+    )
+  })
+})

@@ -1,3 +1,4 @@
+import { tenantWebUrl } from '../../lib/tenantUrl.js'
 import { plainSubject, logoImg } from '../../templates/brand.js'
 import { Resend } from 'resend'
 import { unsubscribeUrl } from '../../services/notificationPreferences.js'
@@ -30,8 +31,11 @@ export async function sendCommentNotification(
     ? `${agentName} — ${agentJobTitle}`
     : agentName
 
-  const baseUrl = process.env.APP_URL ?? 'https://onsignale.fr'
-  const appUrl = baseUrl.replace('://', `://${tenantSlug}.`)
+  // `tenantWebUrl` plutôt qu'un `replace` sur le schéma : celui-ci produisait
+  // `https://dreux.www.onsignale.fr` quand l'origine portait un `www`, et
+  // `http://dreux.localhost:5173` en développement — deux hôtes qui n'existent
+  // pas. Une seule fonction décide de l'adresse d'une commune.
+  const appUrl = tenantWebUrl(tenantSlug)
 
   await resend.emails.send({
     from: `OnSignale <noreply@onsignale.fr>`,
