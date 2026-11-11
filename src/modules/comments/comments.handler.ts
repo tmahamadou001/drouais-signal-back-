@@ -91,20 +91,36 @@ export async function getComments(
       return comment
     })
 
-    if (isCitizen) {
-      await supabaseAdmin
-        .from('report_comments')
-        .update({ read_by_citizen: true })
-        .eq('report_id', reportId)
-        .eq('author_type', 'agent')
-        .eq('read_by_citizen', false)
-    } else if (!isCitizen) {
-      await supabaseAdmin
-        .from('report_comments')
-        .update({ read_by_agent: true })
-        .eq('report_id', reportId)
-        .eq('author_type', 'citizen')
-        .eq('read_by_agent', false)
+    /**
+     * Marquer lu est un **geste**, pas un effet de bord de la lecture.
+     *
+     * Cette requête flanquait `read_by_citizen` à vrai sur tous les messages de
+     * la commune, pour tout appelant. Or la fiche de détail de l'app mobile
+     * charge ce fil pour une raison qui n'a rien à voir — y trouver les photos
+     * de résolution. Ouvrir un signalement effaçait donc le non-lu avant que
+     * l'habitant ait lu quoi que ce soit : plus de pastille, plus de compteur,
+     * et une réponse de la mairie qui passait inaperçue. C'est exactement le
+     * silence que ce fil existe pour éviter.
+     *
+     * L'appelant dit maintenant ce qu'il fait. Sans `?mark_read=1`, la lecture
+     * ne change rien.
+     */
+    if (req.query.mark_read === '1') {
+      if (isCitizen) {
+        await supabaseAdmin
+          .from('report_comments')
+          .update({ read_by_citizen: true })
+          .eq('report_id', reportId)
+          .eq('author_type', 'agent')
+          .eq('read_by_citizen', false)
+      } else {
+        await supabaseAdmin
+          .from('report_comments')
+          .update({ read_by_agent: true })
+          .eq('report_id', reportId)
+          .eq('author_type', 'citizen')
+          .eq('read_by_agent', false)
+      }
     }
 
     const agentMessages = enrichedComments
@@ -210,7 +226,6 @@ export async function createAgentComment(
     if (report.user_id) {
       pushAgentComment({
         userId: report.user_id,
-        tenantId: req.tenant.id,
         reportId,
         reportTitle: report.title,
         excerpt: content.trim(),

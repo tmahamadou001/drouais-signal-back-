@@ -60,10 +60,12 @@ export async function sendStatusChangeNotification(
 
   // Push first, and independently of the e-mail: a citizen with the app and no
   // address on file should still hear about their own report.
-  if (params.userId && params.tenantId) {
+  //
+  // Le compte suffit : la commune ne conditionne plus l'envoi depuis que les
+  // jetons ne sont plus filtrés dessus (voir `tokensFor`).
+  if (params.userId) {
     pushStatusChange({
       userId: params.userId,
-      tenantId: params.tenantId,
       reportId: params.reportId,
       reportTitle: params.reportTitle,
       newStatus: params.newStatus,

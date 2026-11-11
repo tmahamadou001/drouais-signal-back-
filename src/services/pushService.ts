@@ -74,25 +74,32 @@ async function send(messages: PushMessage[]): Promise<void> {
 }
 
 /**
- * Every device the citizen has registered for this commune — provided they
- * still accept this kind of notification.
+ * Tous les appareils de ce compte — s'il accepte encore ce type de
+ * notification.
  *
- * The preference is read once, from the account, rather than filtered inside
- * the token query: since migration 028 it lives on the account and not on the
- * device, because e-mail has no device to hang a switch on.
+ * **Sans filtre de commune**, et c'est un correctif. La ligne est upsertée sur
+ * le jeton : un appareil ne porte donc qu'une commune, la dernière suivie au
+ * moment de l'enregistrement. Filtrer dessus revenait à ne prévenir quelqu'un
+ * que s'il suivait encore la commune de son propre signalement — un habitant
+ * de Dreux qui consulte La Loupe cessait d'être averti de ses signalements à
+ * Dreux, sans que rien ne le lui dise.
+ *
+ * Ce qui fait autorité est le **compte** : la notification parle de *son*
+ * signalement, et la commune qu'il regarde en ce moment n'y change rien. La
+ * colonne `tenant_id` reste, elle dit d'où vient l'enregistrement.
+ *
+ * La préférence est lue une fois, sur le compte, plutôt que filtrée dans la
+ * requête : depuis la migration 028 elle vit sur le compte et non sur
+ * l'appareil, parce que l'e-mail n'a pas d'appareil où accrocher un
+ * interrupteur.
  */
-async function tokensFor(
-  userId: string,
-  tenantId: string,
-  event: NotificationEvent
-): Promise<string[]> {
+async function tokensFor(userId: string, event: NotificationEvent): Promise<string[]> {
   if (!(await allowsPush(userId, event))) return []
 
   const { data, error } = await supabaseAdmin
     .from('device_tokens')
     .select('token')
     .eq('user_id', userId)
-    .eq('tenant_id', tenantId)
 
   if (error) {
     console.error('[Push] Lecture des tokens impossible:', error.message)
@@ -111,7 +118,6 @@ const STATUS_TITLES: Record<string, string> = {
 /** The commune moved a report forward. */
 export async function pushStatusChange(params: {
   userId: string
-  tenantId: string
   reportId: string
   reportTitle: string
   newStatus: string
@@ -121,7 +127,7 @@ export async function pushStatusChange(params: {
   // worth waking a phone for.
   if (!title) return
 
-  const tokens = await tokensFor(params.userId, params.tenantId, 'status')
+  const tokens = await tokensFor(params.userId, 'status')
 
   await send(
     tokens.map((to) => ({
@@ -137,12 +143,11 @@ export async function pushStatusChange(params: {
 /** An agent wrote on the citizen's report. */
 export async function pushAgentComment(params: {
   userId: string
-  tenantId: string
   reportId: string
   reportTitle: string
   excerpt: string
 }): Promise<void> {
-  const tokens = await tokensFor(params.userId, params.tenantId, 'comment')
+  const tokens = await tokensFor(params.userId, 'comment')
 
   await send(
     tokens.map((to) => ({
