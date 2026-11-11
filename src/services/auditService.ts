@@ -44,6 +44,11 @@ export type AuditAction =
   // de signalements qui ont changé de visibilité en est une autre.
   | 'commune.opened'
   | 'commune.closed'
+  // Modération d'une commune sans mairie : nous publions sans elle, donc nous
+  // répondons de ce qui est publié. Chaque geste porte son motif.
+  | 'report.retracted'
+  | 'report.restored'
+  | 'report.photo_removed'
   | 'tenant_config.updated'
   | 'tenant_categories.updated'
 

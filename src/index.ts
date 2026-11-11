@@ -15,6 +15,7 @@ import adminRouter from './routes/admin.js'
 import duplicatesRouter from './routes/duplicates.js'
 import votesRouter from './routes/votes.js'
 import resolutionsRouter from './routes/resolutions.js'
+import moderationRouter from './routes/moderation.js'
 import analyzeRouter from './routes/analyze.js'
 import mapRouter from './routes/map.js'
 import heatmapRouter from './routes/heatmap.js'
@@ -126,6 +127,9 @@ app.use('/api/reports', reportsRouter)
 app.use('/api/reports', duplicateCheckLimiter, duplicatesRouter)
 app.use('/api/reports', votesRouter)
 app.use('/api/reports', resolutionsRouter)
+// Hors de `/api/reports`, qui passe par `requireTenant` : la modération
+// travaille en travers des communes (migration 040).
+app.use('/api/moderation', moderationRouter)
 app.use('/api/reports/:reportId/comments', commentsRouter)
 app.use('/api/comments', unreadCommentsRouter)
 app.use('/api/upload', uploadRouter)
