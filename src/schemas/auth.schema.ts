@@ -57,3 +57,18 @@ export const forgotPasswordSchema = z.object({
 export const setPasswordSchema = z.object({
   body: z.object({ password }),
 })
+
+/**
+ * Le jeton d'un lien d'invitation ou de réinitialisation.
+ *
+ * `token` est le `hashed_token` de Supabase : une chaîne hexadécimale. La
+ * borne haute n'est pas décorative — c'est le seul champ de cette API qu'un
+ * inconnu peut poster sans compte, et rien n'oblige à lire un mégaoctet avant
+ * de le refuser.
+ */
+export const verifyLinkSchema = z.object({
+  body: z.object({
+    token: z.string().trim().min(16).max(512),
+    type: z.enum(['invite', 'recovery']),
+  }),
+})

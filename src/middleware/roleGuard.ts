@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import type { UserRole } from '../types/tenant.js'
+import { teamRoleFrom } from '../lib/teamRoles.js'
 import { AppError } from './errorHandler.js'
 
 // Cache rôle utilisateur — TTL 30 secondes
@@ -43,7 +44,17 @@ async function getUserTenantRole(
 
   if (!data || !data.is_active) return null
 
-  const role = data.role as UserRole
+  /**
+   * Ce qu'on lit dans `tenant_users` ne peut être qu'un rôle d'équipe.
+   *
+   * La valeur était castée (`data.role as UserRole`) et rendue telle quelle :
+   * une ligne portant `super_admin` aurait donc ouvert la plateforme entière à
+   * qui l'aurait obtenue. Le rôle de plateforme ne se lit que dans
+   * `app_metadata`, quelques lignes plus haut, et nulle part ailleurs.
+   */
+  const role = teamRoleFrom(data.role)
+  if (!role) return null
+
   roleCache.set(cacheKey, { role, expiresAt: Date.now() + 30_000 })
   return role
 }

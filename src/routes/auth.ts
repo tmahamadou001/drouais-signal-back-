@@ -15,7 +15,9 @@ import {
   registerSchema,
   forgotPasswordSchema,
   setPasswordSchema,
+  verifyLinkSchema,
 } from '../schemas/auth.schema.js'
+import { buildAccountLink, redeemAccountLink } from '../services/accountLinkService.js'
 
 const router: ExpressRouter = Router()
 
@@ -195,6 +197,32 @@ router.post('/logout', verifyToken, async (req: Request, res: Response, next: Ne
   }
 })
 
+// ─── POST /api/auth/verify-link ────────────────────────────
+/**
+ * Échange le jeton d'un lien d'invitation ou de réinitialisation.
+ *
+ * C'est ce qui permet au lien reçu par e-mail d'être **le nôtre**. Avant, il
+ * pointait sur `https://<projet>.supabase.co/auth/v1/verify?token=…` : le nom
+ * de notre fournisseur d'authentification dans la boîte mail d'un agent
+ * municipal, une adresse qu'il ne peut pas reconnaître comme légitime, et une
+ * dépendance gravée dans des e-mails qu'on ne pourra jamais reprendre.
+ *
+ * Publique par nécessité — celui qui l'appelle n'a pas encore de session,
+ * c'est tout l'objet de l'appel. Le jeton en est la seule preuve ; il est à
+ * usage unique, daté, et `authLimiter` borne les tentatives.
+ */
+router.post('/verify-link', authLimiter, validate(verifyLinkSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { token, type } = req.body
+
+    const session = await redeemAccountLink({ token, type })
+
+    res.json({ access_token: session.accessToken, email: session.email })
+  } catch (err) {
+    next(err)
+  }
+})
+
 // ─── POST /api/auth/set-password ───────────────────────────
 // Appelé depuis /set-password après invitation.
 // Le front envoie le token dans Authorization: Bearer — verifyToken
@@ -227,8 +255,6 @@ router.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), asy
   try {
     const { email } = req.body
 
-    const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
-
     // Récupère le city_name du tenant si présent (pour personnaliser l'email)
     let cityName: string | null = null
     if (req.tenant?.id) {
@@ -240,24 +266,24 @@ router.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), asy
       cityName = data?.city_name ?? null
     }
 
-    // Génère le lien de reset — si l'email n'existe pas, Supabase retourne une erreur
-    // qu'on ignore volontairement (pas de fuite d'info)
-    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+    // Le lien de réinitialisation — le nôtre, sur le sous-domaine de la
+    // commune, et échangé par l'API : voir `accountLinkService`. Une adresse
+    // inconnue ne produit aucun lien, et on l'ignore volontairement pour ne
+    // pas révéler qui a un compte.
+    const link = await buildAccountLink({
       type: 'recovery',
       email,
-      options: {
-        redirectTo: `${clientUrl}/set-password`,
-      },
+      tenantSlug: req.tenant?.slug ?? null,
     })
 
-    if (!linkError && linkData?.properties?.action_link) {
+    if (link) {
       // Récupère le prénom si l'utilisateur est dans tenant_users
       let firstName: string | null = null
-      if (linkData.user?.id && req.tenant?.id) {
+      if (link.userId && req.tenant?.id) {
         const { data: member } = await supabaseAdmin
           .from('tenant_users')
           .select('first_name')
-          .eq('user_id', linkData.user.id)
+          .eq('user_id', link.userId)
           .eq('tenant_id', req.tenant.id)
           .single()
         firstName = member?.first_name ?? null
@@ -268,7 +294,7 @@ router.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), asy
         recipientEmail: email,
         firstName,
         cityName,
-        actionLink: linkData.properties.action_link,
+        actionLink: link.url,
       })
 
       await resend.emails.send({
@@ -278,8 +304,6 @@ router.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), asy
         html,
         text,
       }).catch(err => console.error('[ForgotPassword] Erreur envoi email:', err))
-    } else if (linkError) {
-      console.error('[ForgotPassword] generateLink error (non-fatal):', linkError.message)
     }
 
     // Toujours renvoyer 200 — pas de fuite sur l'existence du compte

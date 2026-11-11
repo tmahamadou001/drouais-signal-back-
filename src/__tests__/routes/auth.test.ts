@@ -19,7 +19,7 @@ vi.mock('resend', () => ({
  * silently loses its RLS bypass. See `lib/supabaseAuthClient.ts`.
  */
 const { credentialsAuth } = vi.hoisted(() => ({
-  credentialsAuth: { signInWithPassword: vi.fn(), signUp: vi.fn() },
+  credentialsAuth: { signInWithPassword: vi.fn(), signUp: vi.fn(), verifyOtp: vi.fn() },
 }))
 
 vi.mock('../../lib/supabaseAuthClient.js', () => ({
@@ -488,5 +488,73 @@ describe('POST /api/auth/forgot-password', () => {
     expect(supabaseAdmin.auth.admin.generateLink).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'recovery', email: 'jean@dreux.fr' })
     )
+  })
+})
+
+// ─── POST /api/auth/verify-link ──────────────────────────────────────────────
+
+/**
+ * L'échange du jeton reçu par e-mail.
+ *
+ * C'est ce qui permet au lien d'invitation d'être le nôtre plutôt qu'une URL
+ * `…supabase.co/auth/v1/verify`. Publique par nécessité : celui qui l'appelle
+ * n'a pas encore de session, c'est tout l'objet de l'appel.
+ */
+describe('POST /api/auth/verify-link', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('exchanges a valid token for a session', async () => {
+    credentialsAuth.verifyOtp.mockResolvedValue({
+      data: { session: { access_token: 'jeton-invitation' }, user: { id: 'user-abc', email: 'agent@mairie.fr' } },
+      error: null,
+    })
+
+    const res = await request(makeApp())
+      .post('/api/auth/verify-link')
+      .send({ token: 'abcdef0123456789abcdef', type: 'invite' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.access_token).toBe('jeton-invitation')
+    expect(credentialsAuth.verifyOtp).toHaveBeenCalledWith({
+      token_hash: 'abcdef0123456789abcdef',
+      type: 'invite',
+    })
+  })
+
+  /** Expiré, déjà utilisé, inventé : une seule réponse, qui ne renseigne personne. */
+  it('answers the same way for every bad token', async () => {
+    credentialsAuth.verifyOtp.mockResolvedValue({ data: {}, error: { message: 'expired' } })
+
+    const res = await request(makeApp())
+      .post('/api/auth/verify-link')
+      .send({ token: 'abcdef0123456789abcdef', type: 'invite' })
+
+    expect(res.status).toBe(401)
+    expect(res.body.error).toBe('invalid_link')
+  })
+
+  it('refuses a kind of link that does not exist', async () => {
+    const res = await request(makeApp())
+      .post('/api/auth/verify-link')
+      .send({ token: 'abcdef0123456789abcdef', type: 'signup' })
+
+    // 422 : c'est la réponse du validateur Zod dans ce dépôt.
+    expect(res.status).toBe(422)
+    expect(credentialsAuth.verifyOtp).not.toHaveBeenCalled()
+  })
+
+  /** Le seul champ qu'un inconnu peut poster sans compte : il est borné. */
+  it('refuses a token that is absurdly short or long', async () => {
+    const short = await request(makeApp())
+      .post('/api/auth/verify-link')
+      .send({ token: 'abc', type: 'invite' })
+
+    const long = await request(makeApp())
+      .post('/api/auth/verify-link')
+      .send({ token: 'a'.repeat(5000), type: 'invite' })
+
+    expect(short.status).toBe(422)
+    expect(long.status).toBe(422)
+    expect(credentialsAuth.verifyOtp).not.toHaveBeenCalled()
   })
 })

@@ -257,11 +257,37 @@ describe('POST /api/tenant/users/invite', () => {
     expect(res.body.error).toBe('bad_request')
   })
 
+  /**
+   * `super_admin` donne accès à toutes les communes de la plateforme. Le rôle
+   * partait du corps de la requête directement en base, où seule une
+   * contrainte `CHECK` le refusait — le dernier rempart, pas le premier.
+   * L'interface n'offre que trois rôles ; l'API ne peut pas s'en contenter.
+   */
+  it('refuses to invite anyone as a platform super admin', async () => {
+    const res = await request(makeApp())
+      .post('/api/tenant/users/invite')
+      .send({ email: 'moi@ville.fr', role: 'super_admin' })
+
+    expect(res.status).toBe(400)
+    expect(supabaseAdmin.auth.admin.generateLink).not.toHaveBeenCalled()
+  })
+
+  it('refuses a role it does not know', async () => {
+    const res = await request(makeApp())
+      .post('/api/tenant/users/invite')
+      .send({ email: 'moi@ville.fr', role: 'maire' })
+
+    expect(res.status).toBe(400)
+  })
+
   it('returns 201 on successful invite (new user)', async () => {
     vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
       data: {
         user: { id: 'new-user-id', email: 'agent@dreux.fr', email_confirmed_at: null } as any,
-        properties: { action_link: 'https://supabase.co/invite?token=abc' } as any,
+        properties: {
+          action_link: 'https://projet.supabase.co/auth/v1/verify?token=abc',
+          hashed_token: 'abc123def456ghi789',
+        } as any,
       },
       error: null,
     })
@@ -297,7 +323,10 @@ describe('POST /api/tenant/users/invite', () => {
     vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
       data: {
         user: { id: 'existing-user-id', email: 'citizen@dreux.fr', email_confirmed_at: '2024-01-01T00:00:00Z' } as any,
-        properties: { action_link: 'https://supabase.co/invite?token=abc' } as any,
+        properties: {
+          action_link: 'https://projet.supabase.co/auth/v1/verify?token=abc',
+          hashed_token: 'abc123def456ghi789',
+        } as any,
       },
       error: null,
     })
@@ -389,7 +418,10 @@ describe('POST /api/tenant/users/:userId/resend-invite', () => {
     vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
       data: {
         user: { id: 'user-abc' } as any,
-        properties: { action_link: 'https://supabase.co/recovery?token=xyz' } as any,
+        properties: {
+          action_link: 'https://projet.supabase.co/auth/v1/verify?token=xyz',
+          hashed_token: 'xyz123def456ghi789',
+        } as any,
       },
       error: null,
     })
@@ -407,6 +439,17 @@ describe('POST /api/tenant/users/:userId/resend-invite', () => {
 
 describe('PATCH /api/tenant/users/:userId', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  /** La même porte que l'invitation, et elle était ouverte pareil. */
+  it('refuses to promote a member to platform super admin', async () => {
+    const res = await request(makeApp())
+      .patch('/api/tenant/users/user-1')
+      .send({ role: 'super_admin' })
+
+    expect(res.status).toBe(400)
+    expect(supabaseAdmin.from).not.toHaveBeenCalled()
+  })
+
 
   /**
    * The member as they stand today, read before any demotion or suspension:

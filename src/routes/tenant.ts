@@ -12,6 +12,8 @@ import { isTenantStatus, publicationEffect, isLaunch, isPartner } from '../lib/t
 import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
 import { listTeam, countOtherAdmins } from '../services/teamService.js'
 import { provisionInvite } from '../services/inviteService.js'
+import { buildAccountLink } from '../services/accountLinkService.js'
+import { isAssignableRole } from '../lib/teamRoles.js'
 
 /**
  * Le refus qui protège la commune d'elle-même.
@@ -297,7 +299,16 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
 
     if (!email || !role) throw badRequest('email et role requis.')
 
-    const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
+    /**
+     * Une commune n'attribue que des rôles d'équipe.
+     *
+     * Le rôle arrivait du corps de la requête et partait directement en base.
+     * `super_admin` y était refusé par une contrainte `CHECK` — le dernier
+     * rempart, pas le premier. Voir `lib/teamRoles.ts`.
+     */
+    if (!isAssignableRole(role)) {
+      throw badRequest('Rôle invalide : administrateur, agent ou observateur.')
+    }
 
     // Récupère la config du tenant pour city_name
     const { data: tenantConfig } = await supabaseAdmin
@@ -310,7 +321,7 @@ router.post('/users/invite', verifyToken, requireTenant, requireTenantAdmin, asy
     // pour ce que Supabase refuse de faire lui-même.
     const { userId, actionLink, alreadyRegistered } = await provisionInvite(
       email,
-      `${clientUrl}/set-password`
+      req.tenant!.slug
     )
 
     // Upsert dans tenant_users
@@ -393,7 +404,6 @@ router.post('/users/:userId/resend-invite', verifyToken, requireTenant, requireT
     if (authError || !authUser.user?.email) throw new AppError(500, 'internal_error', 'Impossible de récupérer l\'email.')
 
     const email = authUser.user.email
-    const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
 
     const { data: tenantConfig } = await supabaseAdmin
       .from('tenant_configs')
@@ -401,17 +411,12 @@ router.post('/users/:userId/resend-invite', verifyToken, requireTenant, requireT
       .eq('tenant_id', req.tenant!.id)
       .single()
 
-    // Génère un lien de récupération (reset password) qui redirige vers /set-password
-    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'recovery',
-      email,
-      options: {
-        redirectTo: `${clientUrl}/set-password`,
-      },
-    })
+    // Un lien de réinitialisation, porté par le sous-domaine de la commune et
+    // échangé par notre API — jamais l'URL de Supabase (`accountLinkService`).
+    const link = await buildAccountLink({ type: 'recovery', email, tenantSlug: req.tenant!.slug })
 
-    if (linkError || !linkData) {
-      console.error('[ResendInvite] Erreur generateLink:', linkError)
+    if (!link) {
+      console.error('[ResendInvite] Lien impossible à générer pour', email)
       throw new AppError(500, 'internal_error', 'Erreur lors de la génération du lien.')
     }
 
@@ -422,7 +427,7 @@ router.post('/users/:userId/resend-invite', verifyToken, requireTenant, requireT
       role: member.role,
       tenantName: req.tenant!.name,
       cityName: tenantConfig?.city_name ?? null,
-      actionLink: linkData.properties.action_link,
+      actionLink: link.url,
     })
 
     await resend.emails.send({
@@ -444,6 +449,12 @@ router.patch('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, a
   try {
     const { userId } = req.params
     const { role, isActive, firstName, lastName, jobTitle } = req.body
+
+    // Même règle qu'à l'invitation : une commune n'attribue que des rôles
+    // d'équipe, et jamais le rôle de plateforme.
+    if (role !== undefined && !isAssignableRole(role)) {
+      throw badRequest('Rôle invalide : administrateur, agent ou observateur.')
+    }
 
     /**
      * Une commune ne peut pas se retrouver sans administrateur.

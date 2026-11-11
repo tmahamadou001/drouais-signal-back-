@@ -1,6 +1,6 @@
-import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { findAuthUserByEmail } from '../lib/authHelpers.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { buildAccountLink } from './accountLinkService.js'
 
 /**
  * Ce qu'une invitation a produit côté authentification.
@@ -33,16 +33,14 @@ export interface InviteProvision {
  */
 export async function provisionInvite(
   email: string,
-  redirectTo: string
+  tenantSlug: string | null
 ): Promise<InviteProvision> {
-  const { data, error } = await supabaseAdmin.auth.admin.generateLink({
-    type: 'invite',
-    email,
-    options: { redirectTo },
-  })
+  // Le lien est le nôtre, sur le sous-domaine de la commune : voir
+  // `accountLinkService`, qui dit pourquoi il ne pointe plus sur Supabase.
+  const link = await buildAccountLink({ type: 'invite', email, tenantSlug })
 
-  if (!error && data?.user) {
-    return { userId: data.user.id, actionLink: data.properties.action_link, alreadyRegistered: false }
+  if (link?.userId) {
+    return { userId: link.userId, actionLink: link.url, alreadyRegistered: false }
   }
 
   // On ne se fie pas au seul code d'erreur : une adresse déjà prise est la
@@ -51,7 +49,7 @@ export async function provisionInvite(
   const existing = await findAuthUserByEmail(email)
 
   if (!existing) {
-    console.error('[Invite] generateLink a échoué et aucun compte ne correspond:', error)
+    console.error('[Invite] Aucun lien généré et aucun compte ne correspond à', email)
     throw new AppError(
       500,
       'internal_error',
