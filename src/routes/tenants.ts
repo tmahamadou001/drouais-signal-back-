@@ -5,6 +5,7 @@ import { badRequest } from '../middleware/errorHandler.js'
 import { joinWaitlist } from '../services/prospectService.js'
 import { z } from 'zod'
 import { publicTenantsLimiter } from '../middleware/rateLimits.js'
+import { TENANT_STATUSES, isBrowsable, isPartner } from '../lib/tenantMode.js'
 
 const router: ExpressRouter = Router()
 
@@ -13,9 +14,14 @@ const router: ExpressRouter = Router()
  *
  * `prospect` en est exclu — rien n'y est publié. `suspended` aussi : une
  * commune dont l'accès est coupé ne doit pas rester dans un sélecteur qui
- * promet des signalements.
+ * promet des signalements. `community` en fait partie depuis la migration 040 :
+ * il n'y a pas de mairie en face, mais il y a bien quelque chose à consulter.
+ *
+ * La liste est dérivée de `lib/tenantMode.ts` plutôt que recopiée : c'est la
+ * même question que « ce signalement est-il publié ? », et deux listes
+ * finiraient par ne plus dire la même chose.
  */
-const PUBLIC_STATUSES = ['active', 'trial', 'demo']
+const PUBLIC_STATUSES = TENANT_STATUSES.filter(isBrowsable)
 
 /**
  * ─── GET /api/tenants/public — Les communes qu'on peut consulter ───
@@ -49,13 +55,27 @@ router.get('/public', publicTenantsLimiter, async (_req: Request, res: Response,
   try {
     const { data, error } = await supabaseAdmin
       .from('tenants')
-      .select('slug, name')
+      .select('slug, name, status')
       .in('status', PUBLIC_STATUSES)
       .order('name')
 
     if (error) throw error
 
-    res.json({ tenants: data ?? [] })
+    /**
+     * `partner` plutôt que le statut brut.
+     *
+     * L'application a besoin de savoir s'il y a une mairie derrière — c'est ce
+     * qui décide du bandeau, du vocabulaire de la frise et de la présence d'un
+     * délai. Elle n'a pas besoin de savoir si la commune est en essai, en
+     * démonstration ou cliente : c'est le contrat, et il ne regarde personne.
+     */
+    const tenants = (data ?? []).map((tenant) => ({
+      slug: tenant.slug,
+      name: tenant.name,
+      partner: isPartner(tenant.status),
+    }))
+
+    res.json({ tenants })
   } catch (err) {
     next(err)
   }
@@ -102,16 +122,22 @@ router.get('/resolve', async (req: Request, res: Response, next: NextFunction) =
      * revenait à dire « commune couverte » à tous les habitants suivants : leur
      * app adoptait un slug sans configuration, sans catégories et sans agents.
      * La coquille n'est pas une adhésion.
+     *
+     * Une commune **citoyenne**, elle, est rendue : il y a bien quelque chose à
+     * consulter et à alimenter. `partner: false` dit à l'application qu'il n'y
+     * a personne pour répondre — c'est à elle de ne pas promettre un traitement.
      */
-    const tenant = location.tenant?.status === 'prospect' ? null : location.tenant
+    const tenant = location.tenant && isBrowsable(location.tenant.status)
+      ? location.tenant
+      : null
 
     res.json({
       insee_code: location.inseeCode,
       commune_name: location.communeName,
       address_label: location.addressLabel,
-      // `null` = commune identifiée mais pas encore partenaire.
+      // `null` = commune identifiée, rien à y consulter.
       tenant: tenant
-        ? { slug: tenant.slug, name: tenant.name, status: tenant.status }
+        ? { slug: tenant.slug, name: tenant.name, partner: isPartner(tenant.status) }
         : null,
     })
   } catch (err) {

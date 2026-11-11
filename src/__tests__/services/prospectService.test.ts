@@ -71,6 +71,22 @@ describe('ensureProspectTenant', () => {
     )
   })
 
+  /**
+   * L'ouverture au public est un geste de super-administrateur, jamais un
+   * effet de bord (migration 040). Créer la commune en `community` ferait que
+   * le premier habitant de passage ouvrirait une page publique au nom d'une
+   * mairie qui n'a rien demandé — exactement ce que ce dispositif évite.
+   */
+  it('never opens a commune to the public by itself', async () => {
+    const { tenantInsert } = mockTables()
+
+    await ensureProspectTenant('75104', 'Paris')
+
+    const inserted = tenantInsert.mock.calls[0][0] as { status: string }
+    expect(inserted.status).toBe('prospect')
+    expect(inserted.status).not.toBe('community')
+  })
+
   it('suffixes the slug with the INSEE code', async () => {
     // Plusieurs communes françaises portent le même nom — il y a une dizaine de
     // Saint-Denis. Sans le suffixe, la seconde échouerait sur l'unicité du slug.

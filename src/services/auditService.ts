@@ -39,6 +39,11 @@ export type AuditAction =
   | 'tenant.created'
   | 'tenant.status_changed'
   | 'tenant.launched'
+  // Ouverture et fermeture au public d'une commune sans mairie (migration 040).
+  // Séparées de `tenant.status_changed` : la décision est une chose, le nombre
+  // de signalements qui ont changé de visibilité en est une autre.
+  | 'commune.opened'
+  | 'commune.closed'
   | 'tenant_config.updated'
   | 'tenant_categories.updated'
 
@@ -279,6 +284,37 @@ export async function auditTenantStatusChanged(params: {
       old_status: params.oldStatus,
       new_status: params.newStatus,
     },
+    ipAddress: params.ipAddress,
+    userAgent: params.userAgent,
+  })
+}
+
+/**
+ * L'ouverture ou la fermeture d'une commune au public, et ce qu'elle a produit.
+ *
+ * Distincte de `tenant.status_changed` pour la même raison que le lancement :
+ * l'une enregistre une décision, l'autre son effet — combien de signalements
+ * ont changé de visibilité. C'est le chiffre qu'on voudra retrouver le jour où
+ * une mairie demandera depuis quand et combien de ses signalements étaient
+ * visibles, et c'est aussi la pièce qui rend la décision opposable.
+ */
+export async function auditCommunePublication(params: {
+  tenantId: string
+  tenantSlug: string
+  opened: boolean
+  affectedReports: number
+  changedBy: string
+  ipAddress?: string
+  userAgent?: string
+}) {
+  await createAuditLog({
+    userId: params.changedBy,
+    action: params.opened ? 'commune.opened' : 'commune.closed',
+    entityType: 'tenant',
+    entityId: params.tenantId,
+    tenantId: params.tenantId,
+    tenantSlug: params.tenantSlug,
+    metadata: { affected_reports: params.affectedReports },
     ipAddress: params.ipAddress,
     userAgent: params.userAgent,
   })

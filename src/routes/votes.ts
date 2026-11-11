@@ -4,6 +4,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
 import { voteLimiter, voteReadLimiter } from '../middleware/rateLimits.js'
 import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
+import { distanceMeters } from '../lib/geoDistance.js'
 
 const router: ExpressRouter = Router()
 
@@ -38,25 +39,6 @@ const router: ExpressRouter = Router()
  */
 const MAX_CONFIRMATION_DISTANCE_M = 150
 
-/** Distance à vol d'oiseau, en mètres. */
-export function distanceMeters(
-  fromLat: number,
-  fromLng: number,
-  toLat: number,
-  toLng: number
-): number {
-  const R = 6_371_000
-  const toRadians = (value: number) => (value * Math.PI) / 180
-
-  const dLat = toRadians(toLat - fromLat)
-  const dLng = toRadians(toLng - fromLng)
-
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRadians(fromLat)) * Math.cos(toRadians(toLat)) * Math.sin(dLng / 2) ** 2
-
-  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)))
-}
 
 // ─── POST /api/reports/:id/confirm ───────────────────────────────────────────
 
@@ -139,3 +121,6 @@ router.get('/:id/my-confirmation', verifyToken, voteReadLimiter, async (req: Req
 })
 
 export default router
+
+/** Réexporté : la mesure appartient désormais à `lib/geoDistance`. */
+export { distanceMeters }

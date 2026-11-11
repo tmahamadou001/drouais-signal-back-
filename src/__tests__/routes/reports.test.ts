@@ -324,6 +324,52 @@ describe('POST /api/reports', () => {
     }))
   })
 
+  /**
+   * Une commune ouverte au public sans mairie (migration 040).
+   *
+   * C'est l'inverse exact du prospect, et le même chemin de code : la
+   * publication se lit sur le statut, à un seul endroit. Un `!== 'prospect'`
+   * écrit ici l'aurait aussi publiée chez les suspendues.
+   */
+  it('publishes in a community commune, which has no town hall', async () => {
+    const COMMUNITY = { ...TENANT, id: 'tenant-community', slug: 'senonches-28373', status: 'community' }
+    mockGeo({
+      inseeCode: '28373',
+      communeName: 'Senonches',
+      addressLabel: null,
+      tenant: COMMUNITY as never,
+    })
+    const { insert } = mockCreation()
+
+    const res = await request(makeApp())
+      .post('/api/reports')
+      .send({ title: 'Lampadaire cassé', category: 'voirie', lat: 48.55, lng: 1.03 })
+
+    expect(res.status).toBe(201)
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      tenant_id: 'tenant-community',
+      is_published: true,
+    }))
+  })
+
+  /** Accès coupé : rien de neuf ne devient visible, quoi qu'il arrive. */
+  it('does not publish in a suspended commune', async () => {
+    const SUSPENDED = { ...TENANT, id: 'tenant-suspended', status: 'suspended' }
+    mockGeo({
+      inseeCode: '28134',
+      communeName: 'Dreux',
+      addressLabel: null,
+      tenant: SUSPENDED as never,
+    })
+    const { insert } = mockCreation()
+
+    await request(makeApp())
+      .post('/api/reports')
+      .send({ title: 'Test', category: 'voirie', lat: 48.73, lng: 1.36 })
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ is_published: false }))
+  })
+
   it('publishes a report in a partner commune', async () => {
     const { insert } = mockCreation()
 

@@ -1,20 +1,26 @@
+import type { TenantStatus } from '../lib/tenantMode.js'
+
 export interface Tenant {
   id: string
   slug: string
   name: string
   /**
-   * `prospect` est le statut d'une commune non cliente dont des habitants
-   * signalent déjà (migration 025). C'est une coquille : pas de configuration,
-   * pas d'agents, et rien de publié. Il manquait ici, ce qui laissait le
-   * compilateur valider `tenant.status !== 'prospect'` comme toujours vrai.
+   * Le régime de la commune. Ce que chaque valeur autorise est décidé en un
+   * seul endroit — `lib/tenantMode.ts` — et jamais par comparaison directe :
+   * `status !== 'prospect'` était vrai pour `suspended`, qui ne publie rien.
+   *
+   * `prospect` : coquille muette (migration 025). `community` : publiée sans
+   * mairie (migration 040). Le reste : partenaire.
    */
-  status: 'trial' | 'active' | 'suspended' | 'demo' | 'prospect'
+  status: TenantStatus
   plan: 'starter' | 'agglo' | 'enterprise'
   contact_name?: string
   contact_email?: string
   contact_phone?: string
   trial_ends_at?: string
   activated_at?: string
+  /** Ouverture au public en mode citoyen. Null si jamais ouverte. */
+  published_at?: string | null
   created_at: string
   updated_at: string
 }

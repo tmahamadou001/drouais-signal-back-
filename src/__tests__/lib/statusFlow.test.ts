@@ -25,7 +25,22 @@ describe('isRollback', () => {
 describe('isFinal', () => {
   it('holds only for resolved', () => {
     expect(isFinal('resolu')).toBe(true)
-    expect(STATUS_ORDER.filter((status) => status !== 'resolu').some(isFinal)).toBe(false)
+    expect(
+      STATUS_ORDER.filter((status) => status !== 'resolu').some((status) => isFinal(status))
+    ).toBe(false)
+  })
+
+  /** Une décision de la commune ne se reprend pas ; un constat d'habitant, si. */
+  it('stays final for a commune decision, and reopens for a resident claim', () => {
+    expect(isFinal('resolu', 'agent')).toBe(true)
+    expect(isFinal('resolu', 'service')).toBe(true)
+    expect(isFinal('resolu', 'residents')).toBe(false)
+  })
+
+  /** Avant la migration 040, aucun autre chemin que la commune n'existait. */
+  it('treats an unknown source as a commune decision', () => {
+    expect(isFinal('resolu', null)).toBe(true)
+    expect(isFinal('resolu', undefined)).toBe(true)
   })
 })
 

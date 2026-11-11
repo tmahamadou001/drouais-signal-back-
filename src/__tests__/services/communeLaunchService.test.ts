@@ -22,6 +22,7 @@ import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
 import {
   notifyCommuneWaitlist,
   publishTenantHistory,
+  unpublishTenantHistory,
 } from '../../services/communeLaunchService.js'
 
 const TENANT = { tenantId: 'tenant-1', tenantName: 'Chartres' }
@@ -75,7 +76,7 @@ function mockTables({
     throw new Error(`table inattendue : ${table}`)
   })
 
-  return { notified }
+  return { notified, reportsUpdate }
 }
 
 beforeEach(() => {
@@ -94,6 +95,26 @@ describe('publishTenantHistory', () => {
     mockTables({ unpublished: [] })
 
     expect(await publishTenantHistory('tenant-1')).toBe(0)
+  })
+})
+
+describe('unpublishTenantHistory', () => {
+  /**
+   * Le retour au silence : une commune partenaire qui s'en va, ou une commune
+   * citoyenne qu'on referme. Laisser public l'inventaire d'une commune qui a
+   * cessé de payer ferait du non-renouvellement un moyen de pression.
+   */
+  it('takes every published report back out of sight', async () => {
+    const { reportsUpdate } = mockTables({ unpublished: [{ id: 'r1' }, { id: 'r2' }] })
+
+    expect(await unpublishTenantHistory('tenant-1')).toBe(2)
+    expect(reportsUpdate).toHaveBeenCalledWith({ is_published: false })
+  })
+
+  it('reports nothing hidden when the commune published nothing', async () => {
+    mockTables({ unpublished: [] })
+
+    expect(await unpublishTenantHistory('tenant-1')).toBe(0)
   })
 })
 

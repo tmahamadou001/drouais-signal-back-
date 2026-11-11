@@ -1,3 +1,4 @@
+import { PARTNER_STATUSES } from './tenantMode.js'
 import { supabaseAdmin } from './supabaseAdmin.js'
 import { Resend } from 'resend'
 import { logoImg, plainSubject } from '../templates/brand.js'
@@ -508,15 +509,16 @@ export async function sendWeeklyReport(tenantId: string): Promise<WeeklyStats> {
  * désormais toutes les heures et ne retient que les communes dont c'est le
  * créneau — ce qui rend ces deux réglages réels.
  *
- * Les prospects sont exclus : personne n'y attend de rapport, et leurs
- * signalements ne sont pas publiés.
+ * Seules les communes partenaires sont servies : une commune silencieuse ou
+ * citoyenne n'a personne pour lire un rapport, et le mode citoyen ne mesure
+ * aucun délai (migration 040).
  */
 async function tenantsDueAt(day: number, hour: number): Promise<{ id: string; name: string }[]> {
   const { data, error } = await supabaseAdmin
     .from('tenant_configs')
     .select('tenant_id, weekly_report_day, weekly_report_hour, feature_weekly_report, tenants!inner(id, name, status)')
     .eq('feature_weekly_report', true)
-    .in('tenants.status', ['active', 'trial', 'demo'])
+    .in('tenants.status', [...PARTNER_STATUSES])
 
   if (error) {
     console.error('[WeeklyReport] Lecture des communes impossible:', error.message)

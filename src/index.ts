@@ -14,6 +14,7 @@ import reportsRouter from './routes/reports.js'
 import adminRouter from './routes/admin.js'
 import duplicatesRouter from './routes/duplicates.js'
 import votesRouter from './routes/votes.js'
+import resolutionsRouter from './routes/resolutions.js'
 import analyzeRouter from './routes/analyze.js'
 import mapRouter from './routes/map.js'
 import heatmapRouter from './routes/heatmap.js'
@@ -124,6 +125,7 @@ app.use('/api/audit', requireTenant)
 app.use('/api/reports', reportsRouter)
 app.use('/api/reports', duplicateCheckLimiter, duplicatesRouter)
 app.use('/api/reports', votesRouter)
+app.use('/api/reports', resolutionsRouter)
 app.use('/api/reports/:reportId/comments', commentsRouter)
 app.use('/api/comments', unreadCommentsRouter)
 app.use('/api/upload', uploadRouter)

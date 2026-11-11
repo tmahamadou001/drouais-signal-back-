@@ -12,6 +12,7 @@ import { applyReportFilters, overdueFilter, readReportFilters, sortColumns } fro
 import { createReportSchema, createManualReportSchema, updateReportSchema, paginationSchema, transmitReportSchema, bulkTransmitSchema } from '../schemas/report.schema.js'
 import { transmitReport, transmitReports } from '../services/transmitService.js'
 import { isFinal, isRollback } from '../lib/statusFlow.js'
+import { publishesReports, isPartner } from '../lib/tenantMode.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
@@ -401,7 +402,7 @@ router.post('/', verifyTokenOptional, createReportLimiter, upload.single('photo'
     }
 
     /**
-     * La couverture se lit sur le **statut** du tenant, pas sur son existence.
+     * La publication se lit sur le **statut** du tenant, pas sur son existence.
      *
      * Elle se déduisait de `location.tenant !== null`, ce qui n'était juste que
      * pour le tout premier signalement d'une commune : le suivant retrouvait le
@@ -409,8 +410,13 @@ router.post('/', verifyTokenOptional, createReportLimiter, upload.single('photo'
      * publiait. L'inventaire des dégradations d'une mairie qui n'a rien demandé
      * devenait public à partir du deuxième habitant — précisément ce que le
      * dispositif prospect existe pour éviter.
+     *
+     * Depuis la migration 040, la question n'est plus binaire : une commune
+     * citoyenne publie sans être partenaire. La réponse appartient donc à
+     * `lib/tenantMode.ts`, qui la donne aussi au reste du système — et non à
+     * une comparaison écrite ici, qui aurait publié chez les suspendues.
      */
-    const covered = tenant.status !== 'prospect'
+    const published = publishesReports(tenant.status)
 
     /**
      * La catégorie est validée contre la liste **nationale**, pas contre celle
@@ -476,10 +482,11 @@ router.post('/', verifyTokenOptional, createReportLimiter, upload.single('photo'
         address_approx: location.addressLabel ?? address_approx?.trim() ?? null,
         insee_code: location.inseeCode,
         geo_resolved: true,
-        // Non publié en commune prospect : publier l'inventaire des
+        // Non publié en commune silencieuse : publier l'inventaire des
         // dégradations d'une mairie qui n'a rien demandé fermerait le marché
-        // qu'on cherche à ouvrir.
-        is_published: covered,
+        // qu'on cherche à ouvrir. Une commune ouverte au public, elle, publie
+        // dès le dépôt — c'est tout l'objet de la bascule.
+        is_published: published,
         position_accuracy: position_accuracy ?? null,
         position_captured_at: position_captured_at ?? null,
         status: 'en_attente',
@@ -526,19 +533,27 @@ router.post('/', verifyTokenOptional, createReportLimiter, upload.single('photo'
       userAgent: req.get('user-agent'),
     }).catch(err => console.error('[Audit] Erreur:', err))
 
-    // Transmission asynchrone au service municipal concerné (non bloquant)
-    sendServiceNotification({
-      reportId: data.id,
-      reportTitle: title.trim(),
-      category,
-      description: description?.trim() || null,
-      addressApprox: address_approx?.trim() || null,
-      photoUrl: photo_url || null,
-      createdAt: new Date().toISOString(),
-      isAnonymous,
-      tenantId: tenant.id,
-      tenantSlug: tenant.slug,
-    }).catch(err => console.error('[ServiceNotif] Erreur:', err))
+    /**
+     * Transmission asynchrone au service municipal concerné (non bloquant).
+     *
+     * Jamais sans mairie : une commune silencieuse ou citoyenne n'a aucun
+     * service destinataire, et écrire à une adresse devinée serait de la
+     * prospection non sollicitée faite au nom d'un habitant.
+     */
+    if (isPartner(tenant.status)) {
+      sendServiceNotification({
+        reportId: data.id,
+        reportTitle: title.trim(),
+        category,
+        description: description?.trim() || null,
+        addressApprox: address_approx?.trim() || null,
+        photoUrl: photo_url || null,
+        createdAt: new Date().toISOString(),
+        isAnonymous,
+        tenantId: tenant.id,
+        tenantSlug: tenant.slug,
+      }).catch(err => console.error('[ServiceNotif] Erreur:', err))
+    }
 
     const response: { id: string; reference: string; anonymous_token?: string } =
       { id: data.id, reference: data.reference }
@@ -645,7 +660,7 @@ router.patch('/:id/status', verifyToken, requireAgent, validate(updateReportSche
 
     const { data: currentReport, error: fetchError } = await supabaseAdmin
       .from('reports')
-      .select('id, title, status, category, address_approx, photo_url, created_at, user_id, tenant_id, is_anonymous, anonymous_token')
+      .select('id, title, status, resolution_source, category, address_approx, photo_url, created_at, user_id, tenant_id, is_anonymous, anonymous_token')
       .eq('id', id)
       .single()
 
@@ -667,7 +682,7 @@ router.patch('/:id/status', verifyToken, requireAgent, validate(updateReportSche
      * L'erreur reste un signalement supprimable, et la conversation avec
      * l'habitant reste ouverte : il peut dire que ce n'est pas réglé.
      */
-    if (status && isFinal(oldStatus)) {
+    if (status && isFinal(oldStatus, currentReport.resolution_source)) {
       throw new AppError(
         409,
         'status_final',
@@ -700,6 +715,30 @@ router.patch('/:id/status', verifyToken, requireAgent, validate(updateReportSche
     if (rpcError) throw rpcError
 
     const updatedReport = Array.isArray(rows) ? rows[0] : rows
+
+    /**
+     * Qui a décidé de la résolution.
+     *
+     * La RPC atomique de la migration 017 ne connaît pas cette colonne, et on
+     * ne la réécrit pas pour ça : l'écriture est faite juste après, dans la
+     * même requête HTTP, et seulement quand il y a quelque chose à écrire.
+     *
+     * Deux cas, et le second est celui qui compte : une commune qui vient de
+     * signer reprend la main sur un signalement que des habitants avaient
+     * fermé. La mention d'origine doit disparaître avec sa réouverture, sinon
+     * le signalement resterait contestable par des habitants alors que la
+     * mairie s'en occupe.
+     */
+    const sourceChanges =
+      status === 'resolu' || currentReport.resolution_source === 'residents'
+
+    if (sourceChanges) {
+      await supabaseAdmin
+        .from('reports')
+        .update({ resolution_source: status === 'resolu' ? 'agent' : null })
+        .eq('id', id)
+    }
+
     res.json({ data: updatedReport })
 
     auditReportStatusChanged({

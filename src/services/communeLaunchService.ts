@@ -53,6 +53,37 @@ export async function publishTenantHistory(tenantId: string): Promise<number> {
 }
 
 /**
+ * Retire de la vue publique tout ce qu'une commune avait publié.
+ *
+ * Le pendant exact de `publishTenantHistory`, et il sert deux fois : quand on
+ * referme une commune citoyenne (migration 040), et quand une commune
+ * partenaire s'en va — fin de contrat, suspension. Dans les deux cas elle
+ * retombe au **silence** : les signalements restent en base, restent lisibles
+ * de leur auteur, et disparaissent des listes, de la carte et de la recherche
+ * de doublons.
+ *
+ * C'est une décision de produit autant que de droit. Laisser public
+ * l'inventaire des dégradations d'une commune qui a cessé de payer ferait du
+ * non-renouvellement un moyen de pression — exactement ce que la migration 025
+ * refusait déjà pour une commune qui n'avait jamais signé.
+ */
+export async function unpublishTenantHistory(tenantId: string): Promise<number> {
+  const { data, error } = await supabaseAdmin
+    .from('reports')
+    .update({ is_published: false })
+    .eq('tenant_id', tenantId)
+    .eq('is_published', true)
+    .select('id')
+
+  if (error) {
+    console.error('[Commune] Dépublication impossible :', error.message)
+    return 0
+  }
+
+  return data?.length ?? 0
+}
+
+/**
  * Prévient les habitants inscrits sur la liste d'attente de cette commune.
  *
  * `notified_at` est posé **par adresse réellement envoyée**, pas en bloc :

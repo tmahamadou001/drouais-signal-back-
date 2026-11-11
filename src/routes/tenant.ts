@@ -6,8 +6,9 @@ import { resolveCategories, resolveActiveCategories } from '../services/category
 import { verifyToken } from '../middleware/auth.js'
 import { requireTenant, invalidateTenantCache } from '../middleware/tenantResolver.js'
 import { requireTenantAdmin, requireSuperAdmin } from '../middleware/roleGuard.js'
-import { auditUserCreated, auditTenantCreated, auditTenantStatusChanged, createAuditLog } from '../services/auditService.js'
-import { launchCommune } from '../services/communeLaunchService.js'
+import { auditUserCreated, auditTenantCreated, auditTenantStatusChanged, auditCommunePublication, createAuditLog } from '../services/auditService.js'
+import { launchCommune, publishTenantHistory, unpublishTenantHistory } from '../services/communeLaunchService.js'
+import { isTenantStatus, publicationEffect, isLaunch, isPartner } from '../lib/tenantMode.js'
 import { AppError, notFound, badRequest } from '../middleware/errorHandler.js'
 import { listTeam, countOtherAdmins } from '../services/teamService.js'
 import { provisionInvite } from '../services/inviteService.js'
@@ -108,6 +109,16 @@ router.get('/config', requireTenant, async (req: Request, res: Response, next: N
       name: req.tenant!.name,
       status: req.tenant!.status,
       plan: req.tenant!.plan,
+      /**
+       * Y a-t-il une mairie qui répond ?
+       *
+       * C'est ce dont l'application a besoin, et le statut ne le dit pas sans
+       * interprétation : `community` est une commune ouverte au public sans
+       * mairie (migration 040), et l'app doit alors changer de vocabulaire —
+       * ni délai annoncé, ni « la mairie traite votre signalement », ni frise
+       * à quatre étapes. Le faire déduire au client aurait dispersé la règle.
+       */
+      partner: isPartner(req.tenant!.status),
       // Une commune sans configuration rend des valeurs par défaut plutôt que
       // `null` : tous les clients lisent `config.city_name` et `config.*`, et
       // leur faire gérer l'absence partout pour un cas de bord se paierait en
@@ -567,65 +578,31 @@ router.get('/all', verifyToken, requireSuperAdmin, async (_req: Request, res: Re
 
 // ─── POST /api/tenant ─── Super Admin ───────────────────
 /**
- * ─── GET /api/tenant/prospects — Le pipeline commercial ───
+ * ─── GET /api/tenant/prospects — Les communes sans mairie ───
  *
  * Les communes dont des habitants signalent déjà, sans que la mairie y ait
- * accès. Classées par volume : ce sont les deux chiffres qu'on lui présente —
- * combien de ses administrés ont signalé, et combien attendent qu'elle
- * rejoigne la plateforme.
+ * accès : les silencieuses (`prospect`) et celles qu'on a ouvertes au public
+ * (`community`, migration 040).
  *
- * C'est ce qui remplace la publication sans permission. Un maire à qui on
- * montre « 312 de vos habitants attendent » écoute ; le même, découvrant une
- * carte publique des dégradations de sa ville, appelle son avocat.
+ * L'écran ne sert plus seulement à préparer un rendez-vous commercial. Il sert
+ * à **décider d'ouvrir une commune**, ce qui demande de savoir si le fonds vaut
+ * une page publique : est-il vivant, combien d'habitants distincts, avec quelles
+ * photos, sur quels sujets. D'où les agrégats, et d'où le fait qu'ils soient
+ * calculés en base.
+ *
+ * Une seule requête, et c'est le point : la version précédente en lançait deux
+ * **par commune** dans un `Promise.all`. Tenable à vingt communes, intenable à
+ * quatre cents — et quatre cents est l'ordre de grandeur visé, puisqu'une
+ * commune entre dans ce tableau au premier signalement de n'importe lequel de
+ * ses habitants.
  */
 router.get('/prospects', verifyToken, requireSuperAdmin, async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const { data: tenants, error } = await supabaseAdmin
-      .from('tenants')
-      .select('id, slug, name, created_at, tenant_territories(insee_code, commune_name)')
-      .eq('status', 'prospect')
+    const { data, error } = await supabaseAdmin.rpc('commune_pipeline_stats')
 
     if (error) throw error
 
-    const prospects = await Promise.all(
-      (tenants ?? []).map(async (tenant) => {
-        const territories = Array.isArray(tenant.tenant_territories)
-          ? tenant.tenant_territories
-          : tenant.tenant_territories ? [tenant.tenant_territories] : []
-        const inseeCodes = territories.map((t: { insee_code: string }) => t.insee_code)
-
-        // Deux comptages séparés plutôt qu'une jointure : la liste d'attente est
-        // indexée par code INSEE, les signalements par tenant. Les rapprocher en
-        // SQL demanderait une vue, pour une page consultée quelques fois par jour.
-        const [reports, waitlist] = await Promise.all([
-          supabaseAdmin
-            .from('reports')
-            .select('*', { count: 'exact', head: true })
-            .eq('tenant_id', tenant.id),
-          inseeCodes.length > 0
-            ? supabaseAdmin
-                .from('commune_waitlist')
-                .select('*', { count: 'exact', head: true })
-                .in('insee_code', inseeCodes)
-            : Promise.resolve({ count: 0 }),
-        ])
-
-        return {
-          id: tenant.id,
-          slug: tenant.slug,
-          name: tenant.name,
-          created_at: tenant.created_at,
-          insee_codes: inseeCodes,
-          report_count: reports.count ?? 0,
-          waitlist_count: waitlist.count ?? 0,
-        }
-      })
-    )
-
-    // Le volume de signalements d'abord : c'est l'argument le plus concret.
-    prospects.sort((a, b) => b.report_count - a.report_count)
-
-    res.json(prospects)
+    res.json(data ?? [])
   } catch (err) {
     next(err)
   }
@@ -701,14 +678,14 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
     const { status } = req.body
 
     /**
-     * `prospect` en fait partie, et il y manquait.
+     * La liste des statuts valides vient de `lib/tenantMode.ts`.
      *
-     * On pouvait faire passer une commune de prospect à active, jamais
-     * l'inverse — une asymétrie non voulue, qui interdisait de défaire une
-     * activation prématurée autrement qu'en base.
+     * Elle était recopiée ici, et `prospect` y avait manqué : on pouvait faire
+     * passer une commune de prospect à active, jamais l'inverse — une
+     * asymétrie non voulue, qui interdisait de défaire une activation
+     * prématurée autrement qu'en base. `community` aurait connu le même sort.
      */
-    const validStatuses = ['trial', 'active', 'suspended', 'demo', 'prospect']
-    if (!validStatuses.includes(status)) {
+    if (!isTenantStatus(status)) {
       throw badRequest('Statut invalide.')
     }
 
@@ -724,6 +701,10 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
         status,
         updated_at: new Date().toISOString(),
         ...(status === 'active' ? { activated_at: new Date().toISOString() } : {}),
+        // Quand la commune a été ouverte au public sans mairie. On ne l'écrase
+        // pas à la fermeture : c'est une date d'ouverture, pas un drapeau, et
+        // elle dit depuis quand les signalements ont été visibles.
+        ...(status === 'community' ? { published_at: new Date().toISOString() } : {}),
       })
       .eq('id', tenantId)
       .select()
@@ -742,7 +723,52 @@ router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Re
      * le premier jour ; prévenir la liste d'attente tient la promesse faite à
      * ses habitants, qui ont laissé leur adresse pour cela.
      */
-    if (currentTenant?.status === 'prospect' && status === 'active') {
+    /**
+     * L'historique suit la publication, dans les deux sens.
+     *
+     * Ouvrir une commune au public rend visible tout ce qu'elle avait reçu en
+     * silence ; la refermer — ou la perdre comme cliente — remet tout hors de
+     * vue. C'est la décision prise avec la responsable produit : une commune
+     * qui s'en va retombe au silence, elle ne reste pas citoyenne. Laisser son
+     * inventaire public ferait du non-renouvellement un moyen de pression.
+     *
+     * Volontairement hors du chemin de la bascule elle-même : le statut est
+     * déjà enregistré, et ni la publication ni les e-mails ne doivent pouvoir
+     * la faire échouer.
+     */
+    const effect = currentTenant
+      ? publicationEffect(currentTenant.status, status)
+      : 'none'
+
+    if (effect !== 'none') {
+      void (async () => {
+        const affected = effect === 'publish'
+          ? await publishTenantHistory(tenantId)
+          : await unpublishTenantHistory(tenantId)
+
+        await auditCommunePublication({
+          tenantId,
+          tenantSlug: data.slug,
+          opened: effect === 'publish',
+          affectedReports: affected,
+          changedBy: req.userId!,
+          ipAddress: req.ip,
+          userAgent: req.get('user-agent'),
+        }).catch(err => console.error('[Audit] Erreur:', err))
+      })().catch(err => console.error('[Commune] Publication :', err))
+    }
+
+    /**
+     * Le jour où la commune devient partenaire.
+     *
+     * Depuis la migration 040 elle peut y venir de deux états : silencieuse ou
+     * citoyenne. Dans les deux cas ses habitants s'étaient inscrits pour être
+     * prévenus que leur mairie rejoigne la plateforme, et c'est maintenant.
+     *
+     * `launchCommune` publie aussi l'historique, ce qui ne fait rien de plus
+     * quand il l'est déjà : la requête ne prend que les lignes non publiées.
+     */
+    if (currentTenant && isLaunch(currentTenant.status, status)) {
       void launchCommune({
         tenantId,
         tenantSlug: data.slug,

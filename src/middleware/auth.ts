@@ -47,6 +47,16 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
     req.userId = data.user.id
     req.userEmail = data.user.email
     req.userRole = data.user.app_metadata?.role || 'citizen'
+    /**
+     * Renseigné ici comme dans `verifyTokenOptional`, où il l'était seul.
+     *
+     * L'omission n'avait aucun effet tant que le seul lecteur était la création
+     * d'un signalement, qui passe par la variante optionnelle. Elle en a un dès
+     * qu'une route protégée veut distinguer un compte d'une session anonyme —
+     * et une session anonyme s'obtient à volonté, donc « un compte » y
+     * deviendrait « autant de comptes qu'on veut ».
+     */
+    req.isAnonymousUser = data.user.is_anonymous ?? false
 
     next()
   } catch (err) {

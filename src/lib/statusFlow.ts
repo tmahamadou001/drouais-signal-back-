@@ -34,7 +34,20 @@ export function isRollback(from: string, to: string): boolean {
   return origin >= 0 && target >= 0 && target < origin
 }
 
-/** Un signalement clos ne change plus de statut. */
-export function isFinal(status: string): boolean {
-  return status === TERMINAL_STATUS
+/**
+ * Un signalement clos ne change plus de statut — sauf s'il a été clos par des
+ * habitants.
+ *
+ * La terminalité protège une promesse : la commune a dit à l'habitant que
+ * c'était fait, et on ne reprend pas une promesse. Un constat d'habitant
+ * (migration 040) n'est pas une promesse, c'est une observation — sincère et
+ * parfois fausse, le trou rebouché était celui d'à côté. Elle se conteste.
+ *
+ * Par défaut, une source inconnue est traitée comme une décision de la
+ * commune : c'était le seul chemin possible avant la migration 040, et tous
+ * les signalements antérieurs ont été remplis en conséquence.
+ */
+export function isFinal(status: string, resolutionSource?: string | null): boolean {
+  if (status !== TERMINAL_STATUS) return false
+  return resolutionSource !== 'residents'
 }

@@ -140,6 +140,38 @@ export async function pushStatusChange(params: {
   )
 }
 
+/**
+ * Des habitants ont fermé — ou rouvert — le signalement de quelqu'un d'autre.
+ *
+ * Un titre à part plutôt que `pushStatusChange` : « Votre signalement a été
+ * résolu » laisse entendre que la mairie l'a traité, ce qui serait faux dans
+ * une commune citoyenne (migration 040) et ferait attendre une suite qui ne
+ * viendra pas. L'auteur doit surtout savoir qu'il peut contester.
+ *
+ * Même canal de préférences que les changements de statut : c'est la même
+ * question pour l'habitant — « où en est mon signalement ? ».
+ */
+export async function pushResidentResolution(params: {
+  userId: string
+  reportId: string
+  reportTitle: string
+  reopened: boolean
+}): Promise<void> {
+  const tokens = await tokensFor(params.userId, 'status')
+
+  await send(
+    tokens.map((to) => ({
+      to,
+      title: params.reopened
+        ? 'Des habitants signalent que le problème est toujours là'
+        : 'Des habitants ont constaté la réparation',
+      body: params.reportTitle,
+      data: { reportId: params.reportId, kind: 'status' as const },
+      sound: 'default' as const,
+    }))
+  )
+}
+
 /** An agent wrote on the citizen's report. */
 export async function pushAgentComment(params: {
   userId: string
