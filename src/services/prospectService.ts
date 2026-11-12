@@ -29,19 +29,15 @@ function slugFor(communeName: string, inseeCode: string): string {
 }
 
 /**
- * Le préfixe des références de cette commune (`CHA` dans `CHA-2026-00418`).
- *
- * Même règle que la migration 032 : les trois premières lettres du slug, en
- * majuscules. La colonne est `NOT NULL` et figée à l'ouverture — l'omettre
- * faisait échouer la création du prospect, donc le dépôt lui-même.
- */
-function referencePrefixFor(slug: string): string {
-  const letters = slug.replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase()
-  return letters || 'ONS'
-}
-
-/**
  * Le tenant prospect de cette commune, créé s'il n'existe pas.
+ *
+ * `reference_prefix` n'est **pas** posé ici, et c'est délibéré depuis la
+ * migration 046 : un trigger `BEFORE INSERT` s'en charge, parce que deux
+ * appelants le posaient — celui-ci correctement, et `POST /api/tenant` pas du
+ * tout, alors que la colonne est `NOT NULL`. Il choisit surtout un préfixe
+ * **libre** : les trois premières lettres du slug donnaient `VER` aussi bien à
+ * Vernouillet qu'à Versailles, et comme les références sont uniques
+ * globalement, le premier signalement de la seconde commune échouait.
  *
  * Idempotent par le territoire : c'est `tenant_territories.insee_code` qui est
  * clé primaire, donc deux signalements simultanés depuis la même commune ne
@@ -59,7 +55,6 @@ export async function ensureProspectTenant(
     .insert({
       slug,
       name: communeName || `Commune ${inseeCode}`,
-      reference_prefix: referencePrefixFor(slug),
       status: 'prospect',
       plan: 'starter',
     })

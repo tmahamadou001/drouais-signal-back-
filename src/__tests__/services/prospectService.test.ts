@@ -155,28 +155,38 @@ describe('joinWaitlist', () => {
 })
 
 /**
- * `tenants.reference_prefix` est `NOT NULL` depuis la migration 032. L'omettre
- * faisait échouer l'insertion, donc `ensureProspectTenant` rendait `null`, donc
- * tout dépôt depuis une commune non couverte répondait 503.
+ * Le préfixe de référence appartient à la base, depuis la migration 046.
+ *
+ * Il a d'abord été posé ici, parce que la colonne est `NOT NULL` et que
+ * l'omettre faisait échouer l'insertion — donc le dépôt lui-même. Mais la
+ * règle qu'il appliquait, « les trois premières lettres du slug », donnait
+ * `VER` à Vernouillet **comme à Versailles** ; les références étant uniques
+ * globalement, le premier signalement de la seconde commune échouait à
+ * l'insertion et était perdu.
+ *
+ * Choisir un préfixe libre demande de lire la table entière, ce qui ne se fait
+ * pas sans course depuis le client. Un trigger `BEFORE INSERT` s'en charge, et
+ * un index unique le tient. Le serveur n'a donc plus rien à dire ici — y
+ * compris pour `POST /api/tenant`, qui ne l'a jamais posé.
  */
 describe('reference prefix of a prospect tenant', () => {
-  it('derives the prefix from the first three letters of the slug', async () => {
+  it('leaves the prefix to the database rather than guessing one', async () => {
+    const { tenantInsert } = mockTables()
+
+    await ensureProspectTenant('28085', 'Chartres')
+
+    expect(tenantInsert).toHaveBeenCalledTimes(1)
+    expect(tenantInsert.mock.calls[0][0]).not.toHaveProperty('reference_prefix')
+  })
+
+  /** Ce qu'il continue de poser : le reste de la commune. */
+  it('still inserts the commune itself', async () => {
     const { tenantInsert } = mockTables()
 
     await ensureProspectTenant('28085', 'Chartres')
 
     expect(tenantInsert).toHaveBeenCalledWith(
-      expect.objectContaining({ reference_prefix: 'CHA' })
-    )
-  })
-
-  it('never inserts a null prefix, even for a name without letters', async () => {
-    const { tenantInsert } = mockTables()
-
-    await ensureProspectTenant('97123', '123')
-
-    expect(tenantInsert).toHaveBeenCalledWith(
-      expect.objectContaining({ reference_prefix: 'ONS' })
+      expect.objectContaining({ slug: 'chartres-28085', name: 'Chartres', status: 'prospect' })
     )
   })
 })
