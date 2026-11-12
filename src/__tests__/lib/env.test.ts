@@ -71,6 +71,7 @@ describe('what is merely expected in production', () => {
         CLIENT_URL: 'https://dreux.onsignale.fr',
         RESEND_API_KEY: 're_xxx',
         UNSUBSCRIBE_SECRET: 'un-secret-assez-long-pour-signer',
+        SENTRY_DSN: 'https://k@o.ingest.de.sentry.io/1',
       } as NodeJS.ProcessEnv)
     ).toEqual([])
   })

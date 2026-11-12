@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express'
 import { ZodError } from 'zod'
+import { captureError } from '../lib/sentry.js'
 
 export class AppError extends Error {
   constructor(
@@ -90,6 +91,25 @@ export function errorHandler(
   // Erreur inattendue — log complet côté serveur, message générique côté client
   const errorId = `err_${Date.now().toString(36)}`
   console.error(`[${errorId}] Erreur non gérée:`, err)
+
+  /**
+   * Et signalée, pour qu'elle existe ailleurs que dans un journal qui défile.
+   *
+   * Ici seulement, et c'est délibéré : au-dessus, chaque branche est un cas
+   * *prévu* — un 404, une validation refusée, un fichier trop gros. Les
+   * remonter noierait les vraies pannes sous le bruit des erreurs qui font
+   * leur travail.
+   *
+   * `req.route?.path` et non `req.originalUrl` : le gabarit regroupe les
+   * occurrences d'une même panne, là où l'URL réelle porterait l'identifiant
+   * du signalement — et, sur `/api/service/:token`, le jeton lui-même.
+   */
+  captureError(err, {
+    errorId,
+    method: req.method,
+    path: req.route?.path ?? req.baseUrl,
+    tenant: req.tenant?.slug,
+  })
 
   if (res.headersSent) return
   res.status(500).json({

@@ -33,6 +33,10 @@ const schema = z.object({
   EMAIL_ASSET_URL: z.string().url().optional(),
   UNSUBSCRIBE_SECRET: z.string().min(16).optional(),
   REDIS_URL: z.string().optional(),
+  SENTRY_DSN: z.string().url().optional(),
+  SENTRY_ENVIRONMENT: z.string().optional(),
+  SENTRY_RELEASE: z.string().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z.string().optional(),
 })
 
 /**
@@ -48,6 +52,7 @@ export function missingInProduction(env: NodeJS.ProcessEnv = process.env): strin
     ['CLIENT_URL', 'les liens des e-mails retomberaient sur l’apex, qui sert le site de présentation'],
     ['RESEND_API_KEY', 'aucun e-mail ne partirait — invitations, changements de statut, réponses de la mairie'],
     ['UNSUBSCRIBE_SECRET', 'les liens de désabonnement seraient signés par la clé service_role'],
+    ['SENTRY_DSN', 'aucune panne ne serait signalée ; elles ne vivraient que dans des journaux que personne ne regarde la nuit'],
   ]
 
   return required.filter(([name]) => !env[name]).map(([name, why]) => `${name} — ${why}`)

@@ -1,3 +1,5 @@
+// Avant tout le reste : voir l'en-tête de `instrument.ts`.
+import './instrument.js'
 import { isAllowedOrigin } from './lib/corsOrigin.js'
 import { readEnv, missingInProduction } from './lib/env.js'
 import express from 'express'
