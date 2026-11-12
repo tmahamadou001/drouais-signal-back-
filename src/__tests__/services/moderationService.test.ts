@@ -71,6 +71,28 @@ describe('retracting a report', () => {
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ is_published: false }))
   })
 
+  /**
+   * `is_published` portait deux sens incompatibles : « jamais publié, la
+   * commune est silencieuse » et « retiré par un modérateur ». Rouvrir une
+   * commune republiait donc ce qu'on venait d'en retirer.
+   */
+  it('marks why it is unpublished, not merely that it is', async () => {
+    const { update } = mockReport()
+
+    await retractReport('report-1')
+
+    expect(update.mock.calls[0][0]).toHaveProperty('retracted_at')
+    expect(update.mock.calls[0][0].retracted_at).toEqual(expect.any(String))
+  })
+
+  it('clears that mark when the report is put back', async () => {
+    const { update } = mockReport({ is_published: false })
+
+    await restoreReport('report-1')
+
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ retracted_at: null }))
+  })
+
   it('puts it back, because a moderation gesture that cannot be undone is not made calmly', async () => {
     const { update } = mockReport({ is_published: false })
 

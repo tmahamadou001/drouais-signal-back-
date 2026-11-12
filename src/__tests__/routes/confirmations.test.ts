@@ -7,9 +7,13 @@ vi.mock('../../lib/supabaseAdmin.js', () => ({
   supabaseAdmin: { from: vi.fn() },
 }))
 
+/** Session anonyme de l'application, ou compte réel : décidé par test. */
+let anonymousSession = false
+
 vi.mock('../../middleware/auth.js', () => ({
   verifyToken: (req: any, _res: any, next: any) => {
-    req.userId = 'citizen-1'
+    req.userId = anonymousSession ? 'session-jetable-1' : 'citizen-1'
+    req.isAnonymousUser = anonymousSession
     next()
   },
 }))
@@ -60,7 +64,10 @@ function mockDatabase({
   return { insert }
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  anonymousSession = false
+  vi.clearAllMocks()
+})
 
 describe('POST /api/reports/:id/confirm', () => {
   it('accepts a citizen standing at the report', async () => {
@@ -181,5 +188,52 @@ describe('distanceMeters', () => {
 
   it('is symmetric', () => {
     expect(distanceMeters(48.73, 1.36, 48.74, 1.37)).toBe(distanceMeters(48.74, 1.37, 48.73, 1.36))
+  })
+})
+
+/**
+ * Une confirmation compte **une personne**.
+ *
+ * L'application se connecte anonymement pour que ses requêtes portent un jeton
+ * vérifiable : c'est une preuve d'origine, pas une identité, et ces sessions
+ * s'obtiennent à volonté. L'unicité portant sur `(report_id, user_id)`, chaque
+ * nouvelle session valait une confirmation de plus — de quoi ordonner la file
+ * de tri des agents, et de quoi gonfler le chiffre sur lequel on décide
+ * d'ouvrir une commune au public.
+ */
+describe('an anonymous session', () => {
+  it('cannot confirm a report', async () => {
+    anonymousSession = true
+    const { insert } = mockDatabase()
+
+    const res = await request(makeApp())
+      .post('/api/reports/report-1/confirm')
+      .send({ lat: 48.7322, lng: 1.3664 })
+
+    expect(res.status).toBe(403)
+    expect(res.body.error).toBe('account_required')
+    expect(insert).not.toHaveBeenCalled()
+  })
+
+  it('is refused before the report is even read', async () => {
+    anonymousSession = true
+    mockDatabase()
+
+    await request(makeApp())
+      .post('/api/reports/report-1/confirm')
+      .send({ lat: 48.7322, lng: 1.3664 })
+
+    expect(supabaseAdmin.from).not.toHaveBeenCalled()
+  })
+
+  it('leaves a real account alone', async () => {
+    const { insert } = mockDatabase()
+
+    const res = await request(makeApp())
+      .post('/api/reports/report-1/confirm')
+      .send({ lat: 48.7322, lng: 1.3664 })
+
+    expect(res.status).toBe(200)
+    expect(insert).toHaveBeenCalled()
   })
 })

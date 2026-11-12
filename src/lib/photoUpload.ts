@@ -1,5 +1,7 @@
 import crypto from 'crypto'
 import { supabaseAdmin } from './supabaseAdmin.js'
+import { matchesDeclaredType } from './imageSignature.js'
+import { AppError } from '../middleware/errorHandler.js'
 
 /**
  * Une photo envoyée par un habitant, stockée et signée.
@@ -19,6 +21,21 @@ export async function uploadPhoto(file: {
   buffer: Buffer
   mimetype: string
 }): Promise<string> {
+  /**
+   * Le fichier est **vraiment** une image, et celle qu'il prétend être.
+   *
+   * `multer` ne lit que le type déclaré par le client. Un fichier quelconque
+   * annoncé `image/jpeg` finissait donc dans le bucket, servi par une URL
+   * signée d'un an sous notre nom de domaine.
+   */
+  if (!matchesDeclaredType(file.buffer, file.mimetype)) {
+    throw new AppError(
+      400,
+      'invalid_file_type',
+      'Ce fichier n’est pas une image valide. Utilisez une photo au format JPG, PNG, WebP ou GIF.'
+    )
+  }
+
   const ext = file.mimetype.split('/')[1] || 'jpg'
   const path = `reports/${crypto.randomUUID()}.${ext}`
 

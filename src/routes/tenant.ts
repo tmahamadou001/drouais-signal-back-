@@ -5,7 +5,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { resolveCategories, resolveActiveCategories } from '../services/categoryService.js'
 import { verifyToken } from '../middleware/auth.js'
 import { requireTenant, invalidateTenantCache } from '../middleware/tenantResolver.js'
-import { requireTenantAdmin, requireSuperAdmin } from '../middleware/roleGuard.js'
+import { requireTenantAdmin, requirePlatformAdmin } from '../middleware/roleGuard.js'
 import { auditUserCreated, auditTenantCreated, auditTenantStatusChanged, auditCommunePublication, createAuditLog } from '../services/auditService.js'
 import { launchCommune, publishTenantHistory, unpublishTenantHistory } from '../services/communeLaunchService.js'
 import { isTenantStatus, publicationEffect, isLaunch, isPartner } from '../lib/tenantMode.js'
@@ -568,7 +568,7 @@ router.delete('/users/:userId', verifyToken, requireTenant, requireTenantAdmin, 
 })
 
 // ─── GET /api/tenant/all ─── Super Admin ────────────────
-router.get('/all', verifyToken, requireSuperAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/all', verifyToken, requirePlatformAdmin, async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('tenants')
@@ -607,7 +607,7 @@ router.get('/all', verifyToken, requireSuperAdmin, async (_req: Request, res: Re
  * commune entre dans ce tableau au premier signalement de n'importe lequel de
  * ses habitants.
  */
-router.get('/prospects', verifyToken, requireSuperAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/prospects', verifyToken, requirePlatformAdmin, async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const { data, error } = await supabaseAdmin.rpc('commune_pipeline_stats')
 
@@ -619,7 +619,7 @@ router.get('/prospects', verifyToken, requireSuperAdmin, async (_req: Request, r
   }
 })
 
-router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', verifyToken, requirePlatformAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       slug, name, plan, contactEmail,
@@ -683,7 +683,7 @@ router.post('/', verifyToken, requireSuperAdmin, async (req: Request, res: Respo
 })
 
 // ─── PATCH /api/tenant/:tenantId/status ─── Super Admin ─
-router.patch('/:tenantId/status', verifyToken, requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:tenantId/status', verifyToken, requirePlatformAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId } = req.params
     const { status } = req.body

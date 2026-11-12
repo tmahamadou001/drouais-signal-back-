@@ -101,13 +101,15 @@ describe('voir — lectures du back-office', () => {
 
 describe('the guards themselves', () => {
   /** A guard nobody calls is a promise nobody keeps. */
-  it.each(['requireAgent', 'requireTeamMember', 'requireTenantAdmin', 'requireSuperAdmin'])(
+  it.each(['requireAgent', 'requireTeamMember', 'requireTenantAdmin', 'requirePlatformAdmin'])(
     '%s is used by at least one route',
     (guard) => {
       const routers = [
         'routes/reports.ts', 'routes/admin.ts', 'routes/heatmap.ts', 'routes/tenant.ts',
         'routes/upload.ts', 'routes/audit.ts', 'routes/weeklyReport.ts',
         'modules/comments/comments.router.ts', 'modules/comments/unread.router.ts',
+        // Routes de plateforme : elles travaillent en travers des communes.
+        'routes/moderation.ts',
       ]
 
       const used = routers.some((file) => {

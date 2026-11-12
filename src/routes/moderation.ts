@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import type { Router as ExpressRouter } from 'express'
 import { verifyToken } from '../middleware/auth.js'
-import { requireSuperAdmin } from '../middleware/roleGuard.js'
+import { requirePlatformAdmin } from '../middleware/roleGuard.js'
 import { badRequest } from '../middleware/errorHandler.js'
 import { createAuditLog } from '../services/auditService.js'
 import {
@@ -28,7 +28,7 @@ const router: ExpressRouter = Router()
 
 const MAX_LIMIT = 100
 
-router.use(verifyToken, requireSuperAdmin)
+router.use(verifyToken, requirePlatformAdmin)
 
 router.get('/reports', async (req: Request, res: Response, next: NextFunction) => {
   try {

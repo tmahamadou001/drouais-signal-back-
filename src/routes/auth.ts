@@ -17,7 +17,8 @@ import {
   setPasswordSchema,
   verifyLinkSchema,
 } from '../schemas/auth.schema.js'
-import { buildAccountLink, redeemAccountLink } from '../services/accountLinkService.js'
+import { buildAccountLink, redeemAccountLink, consumeRedemption } from '../services/accountLinkService.js'
+import { deleteAccount } from '../services/accountDeletionService.js'
 
 const router: ExpressRouter = Router()
 
@@ -231,6 +232,31 @@ router.post('/set-password', verifyToken, validate(setPasswordSchema), async (re
   try {
     const { password } = req.body
 
+    /**
+     * Une session seule ne suffit plus.
+     *
+     * La route n'exigeait qu'un jeton d'accès valide : tout porteur d'une
+     * session posait un mot de passe sans connaître l'ancien et sans venir
+     * d'un lien. Un jeton recopié sur un poste partagé devenait une prise de
+     * contrôle définitive, et la déconnexion globale n'y pouvait plus rien —
+     * l'attaquant avait le mot de passe.
+     *
+     * Le droit vient de ce qui précède : avoir échangé un lien d'invitation ou
+     * de réinitialisation dans les quinze dernières minutes
+     * (`accountLinkService`). C'est précisément le parcours de l'écran
+     * `/set-password`, et rien d'autre ne mène ici.
+     *
+     * Une session anonyme n'y a jamais droit : elle ne désigne personne, et
+     * poser un mot de passe dessus fabriquerait un compte fantôme.
+     */
+    if (req.isAnonymousUser || !consumeRedemption(req.userId!)) {
+      throw new AppError(
+        403,
+        'link_required',
+        'Pour définir un mot de passe, passez par le lien reçu par e-mail. Demandez-en un nouveau si le vôtre a expiré.'
+      )
+    }
+
     const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(req.userId!, {
       password,
     })
@@ -243,6 +269,46 @@ router.post('/set-password', verifyToken, validate(setPasswordSchema), async (re
     }
 
     res.json({ success: true })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ─── DELETE /api/auth/account ──────────────────────────────
+/**
+ * Supprimer son compte, depuis l'application.
+ *
+ * Apple exige que la suppression soit initiable depuis l'app ; au-delà de la
+ * règle, demander d'écrire un e-mail pour disparaître est une friction qu'on
+ * n'imposerait pas pour s'inscrire.
+ *
+ * Ce qui part et ce qui reste est décrit par `accountDeletionService`, et dit
+ * publiquement sur `/supprimer-mes-donnees`. Une session anonyme n'a rien à
+ * supprimer : elle ne désigne personne et disparaît avec l'installation.
+ */
+router.delete('/account', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (req.isAnonymousUser) {
+      throw new AppError(
+        403,
+        'account_required',
+        'Cette session n’est rattachée à aucun compte : il n’y a rien à supprimer.'
+      )
+    }
+
+    const outcome = await deleteAccount(req.userId!)
+
+    createAuditLog({
+      userId: req.userId,
+      action: 'user.deleted',
+      entityType: 'user',
+      entityId: req.userId!,
+      metadata: { ...outcome },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    }).catch((err) => console.error('[Audit] Erreur:', err))
+
+    res.json({ success: true, ...outcome })
   } catch (err) {
     next(err)
   }

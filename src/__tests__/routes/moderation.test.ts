@@ -13,7 +13,9 @@ vi.mock('../../middleware/auth.js', () => ({
 }))
 
 vi.mock('../../middleware/roleGuard.js', () => ({
-  requireSuperAdmin: (_req: Request, res: Response, next: NextFunction) => {
+  // La modération travaille en travers des communes : son garde ne dépend
+  // donc pas de `req.tenant` (voir `requirePlatformAdmin`).
+  requirePlatformAdmin: (_req: Request, res: Response, next: NextFunction) => {
     if (!superAdmin) {
       res.status(403).json({ error: 'forbidden' })
       return

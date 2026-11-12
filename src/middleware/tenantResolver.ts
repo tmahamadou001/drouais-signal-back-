@@ -68,6 +68,14 @@ const TENANT_AGNOSTIC = [
   // une, donc exiger d'en avoir déjà une serait circulaire.
   '/tenants/public',
   /**
+   * La taxonomie nationale.
+   *
+   * Elle existe **avant** toute commune — c'est tout l'objet de la migration
+   * 026 — et le citoyen qui rédige un signalement dans une commune que la
+   * plateforme ne couvre pas encore n'en a pas d'autre à proposer.
+   */
+  '/tenants/categories',
+  /**
    * Les liens remis aux services extérieurs.
    *
    * Celui qui clique n'a ni compte, ni sous-domaine, ni en-tête : il ouvre un

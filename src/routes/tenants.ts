@@ -3,8 +3,9 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { resolve as resolveLocation, isPlausiblePosition } from '../services/geoRouting.js'
 import { badRequest } from '../middleware/errorHandler.js'
 import { joinWaitlist } from '../services/prospectService.js'
+import { resolveActiveCategories } from '../services/categoryService.js'
 import { z } from 'zod'
-import { publicTenantsLimiter } from '../middleware/rateLimits.js'
+import { publicTenantsLimiter, waitlistLimiter } from '../middleware/rateLimits.js'
 import { TENANT_STATUSES, isBrowsable, isPartner } from '../lib/tenantMode.js'
 
 const router: ExpressRouter = Router()
@@ -162,7 +163,7 @@ const waitlistSchema = z.object({
  * erreur du point de vue du citoyen, et lui dire « vous êtes déjà inscrit »
  * révélerait qui figure sur la liste.
  */
-router.post('/waitlist', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/waitlist', waitlistLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = waitlistSchema.safeParse(req.body)
     if (!parsed.success) throw badRequest(parsed.error.issues[0]?.message ?? 'Requête invalide.')
@@ -174,6 +175,29 @@ router.post('/waitlist', async (req: Request, res: Response, next: NextFunction)
     })
 
     res.status(204).end()
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
+ * ─── GET /api/tenants/categories — La taxonomie nationale ───
+ *
+ * Les mêmes catégories que `/api/tenant/categories`, mais sans commune : ce
+ * que `resolveCategories(null)` rend déjà, et pour quoi il avait été écrit.
+ *
+ * Elle sert au seul cas où il n'y a pas de commune à interroger : déposer un
+ * signalement là où la plateforme n'a pas encore de tenant consultable. Sans
+ * elle, le formulaire s'ouvrait sur une liste de catégories vide, et le
+ * parcours s'arrêtait là.
+ *
+ * Seules les actives : c'est une liste qu'on propose à un citoyen, pas un
+ * écran de réglage. Rien de personnel n'y figure — ni service destinataire,
+ * ni délai — mais ceux-ci n'ont de toute façon de sens que par commune.
+ */
+router.get('/categories', publicTenantsLimiter, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(await resolveActiveCategories(null))
   } catch (err) {
     next(err)
   }

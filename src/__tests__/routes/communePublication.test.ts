@@ -31,6 +31,7 @@ vi.mock('../../middleware/tenantResolver.js', () => ({
 vi.mock('../../middleware/roleGuard.js', () => ({
   requireTenantAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
   requireSuperAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
+  requirePlatformAdmin: (_req: Request, _res: Response, next: NextFunction) => next(),
 }))
 
 vi.mock('../../lib/authHelpers.js', () => ({ getAuthEmailMap: vi.fn() }))

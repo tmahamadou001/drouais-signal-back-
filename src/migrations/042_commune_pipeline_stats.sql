@@ -116,6 +116,6 @@ $$;
 -- Une fonction SECURITY DEFINER est exécutable par PUBLIC si on ne dit rien, et
 -- celle-ci rend l'intégralité du pipeline commercial — la liste des communes
 -- qu'on démarche, avec leurs volumes. Elle n'appartient qu'au serveur, qui
--- vérifie `requireSuperAdmin` avant de l'appeler (migration 038).
+-- vérifie `requirePlatformAdmin` avant de l'appeler (migration 038).
 REVOKE ALL ON FUNCTION public.commune_pipeline_stats() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.commune_pipeline_stats() TO service_role;

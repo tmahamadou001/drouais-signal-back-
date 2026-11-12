@@ -13,6 +13,14 @@ import { createReportSchema, createManualReportSchema, updateReportSchema, pagin
 import { transmitReport, transmitReports } from '../services/transmitService.js'
 import { isFinal, isRollback } from '../lib/statusFlow.js'
 import { publishesReports, isPartner } from '../lib/tenantMode.js'
+import { uploadPhoto } from '../lib/photoUpload.js'
+import {
+  REPORT_DECISION_COLUMNS,
+  audienceFor,
+  visibleReport,
+  visibleHistory,
+  type ReportRow,
+} from '../lib/reportVisibility.js'
 import { upload } from '../middleware/upload.js'
 import crypto from 'crypto'
 import { validate } from '../middleware/validate.js'
@@ -233,7 +241,10 @@ router.get('/:id', verifyTokenOptional, async (req: Request, res: Response, next
      * publication, plus bas.
      */
     const [reportResult, historyResult] = await Promise.all([
-      supabaseAdmin.from('reports').select('*').eq('id', id).single(),
+      // Projection explicite, jamais `select('*')` : voir `lib/reportVisibility.ts`,
+      // qui dit quel champ sort et pour qui. La ligne brute contient le jeton de
+      // suivi, c'est-à-dire la preuve d'identité de l'auteur d'un dépôt sans compte.
+      supabaseAdmin.from('reports').select(REPORT_DECISION_COLUMNS).eq('id', id).single(),
       supabaseAdmin
         .from('status_history')
         .select('*')
@@ -242,6 +253,10 @@ router.get('/:id', verifyTokenOptional, async (req: Request, res: Response, next
     ])
 
     if (reportResult.error) throw notFound('Signalement')
+
+    // Voir `ReportRow` : la projection n'étant pas une chaîne littérale,
+    // l'inférence de `supabase-js` ne peut pas la suivre.
+    const report = reportResult.data as unknown as ReportRow
 
     /**
      * Un signalement non publié n'est lisible que par son auteur.
@@ -256,7 +271,7 @@ router.get('/:id', verifyTokenOptional, async (req: Request, res: Response, next
      * Son auteur, lui, y a toujours droit : par son compte, ou par le jeton de
      * suivi que le serveur lui a remis une fois.
      */
-    if (!reportResult.data.is_published && !ownsReport(req, reportResult.data)) {
+    if (!report.is_published && !ownsReport(req, report)) {
       throw notFound('Signalement')
     }
 
@@ -269,13 +284,45 @@ router.get('/:id', verifyTokenOptional, async (req: Request, res: Response, next
      * signalement. L'adresse elle-même n'y est pas : le back-office affiche
      * qu'un contact existe, pas lequel.
      */
-    const contact = await resolveCitizenContact(reportResult.data)
+    const contact = await resolveCitizenContact(report)
+
+    /**
+     * À qui l'on parle décide de ce qu'on rend.
+     *
+     * L'auteur n'obtient rien de plus que le public : il a déjà son jeton, et
+     * le lui renvoyer n'ajouterait qu'une occasion de le perdre.
+     */
+    /**
+     * Le régime de la commune **du signalement**, pas de celle qu'on consulte.
+     *
+     * L'application lisait `partner` du contexte, c'est-à-dire de la commune
+     * suivie. Or cette route ignore `X-Tenant-Slug` — volontairement : un
+     * habitant doit pouvoir ouvrir son signalement où qu'il se trouve. Dès
+     * qu'on arrivait par une notification ou un lien d'e-mail, la frise et le
+     * bouton « C'est réparé » s'appuyaient donc sur la mauvaise commune :
+     * quatre étapes là où personne ne traite, ou un geste proposé là où le
+     * serveur le refuse.
+     */
+    const { data: owner } = await supabaseAdmin
+      .from('tenants')
+      .select('status')
+      .eq('id', report.tenant_id)
+      .single()
+
+    const audience = await audienceFor({
+      userId: req.userId,
+      userRole: req.userRole,
+      isAnonymousUser: req.isAnonymousUser,
+      tenantId: report.tenant_id,
+    })
+
+    // Le journal dit qui a agi, pas seulement quoi : la frise montre déjà les
+    // étapes, elle n'a jamais montré leur auteur. Les motifs restent à l'équipe.
+    const history = await withAgentNames(historyResult.data ?? [], report.tenant_id)
 
     res.json({
-      report: reportResult.data,
-      // Le journal dit qui a agi, pas seulement quoi : la frise montre déjà
-      // les étapes, elle n'a jamais montré leur auteur.
-      history: await withAgentNames(historyResult.data ?? [], reportResult.data.tenant_id),
+      report: { ...visibleReport(report, audience), partner: isPartner(owner?.status ?? '') },
+      history: visibleHistory(history, audience),
       contact: { channel: contact.channel, reachable: contact.reachable },
     })
   } catch (err) {
@@ -442,30 +489,14 @@ router.post('/', verifyTokenOptional, createReportLimiter, upload.single('photo'
       }
     }
 
-    // Upload photo to Supabase Storage if present
-    let photo_url: string | null = null
-    if (req.file) {
-      const ext = req.file.mimetype.split('/')[1] || 'jpg'
-      const fileName = `${crypto.randomUUID()}.${ext}`
-      const filePath = `reports/${fileName}`
-
-      const { error: uploadError } = await supabaseAdmin.storage
-        .from('photos')
-        .upload(filePath, req.file.buffer, {
-          contentType: req.file.mimetype,
-          upsert: false,
-        })
-
-      if (uploadError) throw uploadError
-
-      const { data: urlData, error: urlError } = await supabaseAdmin.storage
-        .from('photos')
-        .createSignedUrl(filePath, 31536000)
-
-      if (urlError) throw urlError
-
-      photo_url = urlData.signedUrl
-    }
+    /**
+     * La photo passe par `lib/photoUpload.ts`, comme celle d'un constat.
+     *
+     * Le code était recopié ici — même bucket, même durée de signature, même
+     * nommage — et c'est cette copie qui ne vérifiait pas que le fichier est
+     * une image : `multer` ne lit que le type déclaré par le client.
+     */
+    const photo_url = req.file ? await uploadPhoto(req.file) : null
 
     const { data, error } = await supabaseAdmin
       .from('reports')

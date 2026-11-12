@@ -44,6 +44,28 @@ const MAX_CONFIRMATION_DISTANCE_M = 150
 
 router.post('/:id/confirm', verifyToken, voteLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    /**
+     * Une session anonyme n'est pas un habitant.
+     *
+     * L'application se connecte anonymement pour que ses requêtes portent un
+     * jeton vérifiable : c'est une preuve d'origine, pas une identité, et ces
+     * sessions s'obtiennent à volonté. L'unicité portant sur
+     * `(report_id, user_id)`, chaque nouvelle session valait une confirmation
+     * de plus : cinquante appels suffisaient à faire remonter n'importe quel
+     * signalement en tête de la file des agents — et `vote_count` alimente le
+     * chiffre sur lequel on décide d'ouvrir une commune au public.
+     *
+     * Le constat de réparation posait déjà cette règle (`routes/resolutions.ts`),
+     * et ne la posait qu'à un endroit sur deux.
+     */
+    if (req.isAnonymousUser) {
+      throw new AppError(
+        403,
+        'account_required',
+        'Confirmer un signalement demande un compte : c’est ce qui garantit qu’un constat vaut pour une personne.'
+      )
+    }
+
     const reportId = req.params.id
     const { lat, lng } = req.body as { lat?: unknown; lng?: unknown }
 

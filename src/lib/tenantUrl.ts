@@ -11,9 +11,20 @@
  * par lequel un agent atteint son back-office.
  */
 
-/** L'origine publique du front. Jamais l'apex en production. */
+/**
+ * L'origine publique du front. Jamais l'apex si on peut l'éviter.
+ *
+ * `FRONTEND_URL` n'est définie nulle part : la fonction retombait donc toujours
+ * sur `https://onsignale.fr`, qui sert le site de présentation depuis
+ * Cloudflare et n'a pas de page `/set-password`. `CLIENT_URL`, elle, existe
+ * et désigne l'application — on la lit en second, avant de supposer quoi que
+ * ce soit. `lib/env.ts` prévient au démarrage si les deux manquent en
+ * production.
+ */
 function baseUrl(): string {
-  return (process.env.FRONTEND_URL || 'https://onsignale.fr').replace(/\/$/, '')
+  const configured = process.env.FRONTEND_URL || process.env.CLIENT_URL
+
+  return (configured || 'https://onsignale.fr').replace(/\/$/, '')
 }
 
 export function tenantWebUrl(slug: string | null | undefined): string {

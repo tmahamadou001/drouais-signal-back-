@@ -96,9 +96,64 @@ export async function redeemAccountLink(params: {
     )
   }
 
+  // Ce qui ouvre le droit de poser un mot de passe, quelques minutes durant.
+  rememberRedemption(data.user.id)
+
   return {
     accessToken: data.session.access_token,
     userId: data.user.id,
     email: data.user.email ?? null,
   }
+}
+
+/**
+ * Les échanges de lien récents, et le droit qu'ils ouvrent.
+ *
+ * `POST /api/auth/set-password` n'exigeait qu'un jeton d'accès valide : tout
+ * porteur d'une session changeait le mot de passe sans connaître l'ancien et
+ * sans venir d'un lien de récupération. Un jeton recopié sur un poste partagé
+ * devenait une prise de contrôle définitive — et la déconnexion globale n'y
+ * pouvait plus rien, puisque l'attaquant avait le mot de passe.
+ *
+ * Le droit de poser un mot de passe vient donc de **ce qui l'a précédé** :
+ * avoir échangé un lien d'invitation ou de réinitialisation, il y a peu.
+ *
+ * En mémoire, volontairement. C'est une autorisation de quelques minutes, pour
+ * un geste qui suit immédiatement : la persister demanderait une table, un
+ * nettoyage, et une écriture sur le chemin le plus sensible de l'API. Un
+ * redémarrage pendant qu'un invité choisit son mot de passe le renvoie au
+ * lien, qui est encore valable — c'est le mauvais cas, et il est bénin.
+ */
+const REDEMPTION_TTL_MS = 15 * 60 * 1000
+
+const redemptions = new Map<string, number>()
+
+/** Purge paresseuse : rien ne tourne en arrière-plan pour une poignée de clés. */
+function forgetExpired(now: number): void {
+  for (const [userId, expiresAt] of redemptions) {
+    if (expiresAt <= now) redemptions.delete(userId)
+  }
+}
+
+export function rememberRedemption(userId: string, now = Date.now()): void {
+  forgetExpired(now)
+  redemptions.set(userId, now + REDEMPTION_TTL_MS)
+}
+
+/**
+ * Ce compte vient-il d'échanger un lien ?
+ *
+ * Consommé à la lecture : une autorisation sert une fois. Deux appels
+ * simultanés ne peuvent donc pas poser deux mots de passe.
+ */
+export function consumeRedemption(userId: string, now = Date.now()): boolean {
+  const expiresAt = redemptions.get(userId)
+  redemptions.delete(userId)
+
+  return expiresAt !== undefined && expiresAt > now
+}
+
+/** Pour les tests : l'état en mémoire ne doit pas fuir d'un cas à l'autre. */
+export function clearRedemptions(): void {
+  redemptions.clear()
 }

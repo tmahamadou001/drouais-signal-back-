@@ -135,12 +135,13 @@ function buildApp() {
 import express from 'express'
 import { errorHandler } from '../../middleware/errorHandler.js'
 
-function makeApp({ withUser = true } = {}) {
+function makeApp({ withUser = true, anonymousSession = false } = {}) {
   const app = express()
   app.use(express.json())
   app.use((req: any, _res: any, next: any) => {
     req.tenant = TENANT
     if (withUser) req.userId = 'user-123'
+    req.isAnonymousUser = anonymousSession
     next()
   })
   app.use('/api/reports', reportsRouter)
@@ -824,7 +825,7 @@ describe('personal reads cross commune borders', () => {
 describe('GET /api/reports/:id', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  function mockDetail(report: Record<string, unknown> | null) {
+  function mockDetail(report: Record<string, unknown> | null, history: unknown[] = []) {
     vi.mocked(supabaseAdmin.from).mockImplementation((table: string) => {
       if (table === 'reports') {
         const chain: any = {
@@ -834,14 +835,175 @@ describe('GET /api/reports/:id', () => {
         }
         return chain
       }
+      // `tenants` : le régime de la commune **du signalement**, qui décide du
+      // vocabulaire de la fiche (partenaire ou non).
+      if (table === 'tenants') {
+        const tenantChain: any = {
+          select: () => tenantChain,
+          eq: () => tenantChain,
+          single: async () => ({ data: { status: tenantStatus }, error: null }),
+        }
+        return tenantChain
+      }
+
+      // `status_history` et `tenant_users` : la seconde décide de ce que la
+      // fiche montre (voir `lib/reportVisibility.ts`). Sans ligne, l'appelant
+      // n'est pas de l'équipe.
       const chain: any = {
         select: () => chain,
         eq: () => chain,
-        order: async () => ({ data: [] }),
+        in: () => chain,
+        then: undefined,
+        order: async () => ({ data: history }),
+        maybeSingle: async () => ({ data: teamRole ? { role: teamRole, is_active: true } : null }),
       }
       return chain
     })
   }
+
+  /** Le rôle de l'appelant dans la commune du signalement, s'il en a un. */
+  let teamRole: string | null = null
+  /** Le régime de la commune du signalement. */
+  let tenantStatus = 'active'
+
+  beforeEach(() => { teamRole = null; tenantStatus = 'active' })
+
+  /**
+   * Le constat le plus grave de l'audit du 12 novembre 2026.
+   *
+   * La route rendait la ligne entière (`select('*')`), dont `anonymous_token` :
+   * le secret que le serveur remet une fois à l'auteur d'un dépôt sans compte,
+   * et qui lui sert ensuite de preuve d'identité pour lire le fil avec sa
+   * mairie et y répondre. Il suffisait de parcourir la liste publique pour
+   * récolter les jetons et écrire à la mairie au nom des habitants.
+   */
+  it('never hands out the follow-up token, to anyone', async () => {
+    mockDetail({
+      id: 'r1',
+      tenant_id: 'tenant-1',
+      is_published: true,
+      user_id: null,
+      anonymous_token: 'le-secret-de-l-auteur',
+      anonymous_email: 'habitant@exemple.fr',
+    })
+
+    const res = await request(makeApp()).get('/api/reports/r1')
+
+    expect(res.status).toBe(200)
+    expect(res.body.report.anonymous_token).toBeUndefined()
+    expect(res.body.report.anonymous_email).toBeUndefined()
+    expect(JSON.stringify(res.body)).not.toContain('le-secret-de-l-auteur')
+  })
+
+  /** Même à son auteur : il l'a déjà, et le renvoyer ne fait que l'exposer. */
+  it('does not hand it back to the author either', async () => {
+    mockDetail({
+      id: 'r1',
+      tenant_id: 'tenant-1',
+      is_published: false,
+      user_id: null,
+      anonymous_token: 'le-secret-de-l-auteur',
+    })
+
+    const res = await request(makeApp())
+      .get('/api/reports/r1')
+      .set('X-Report-Token', 'le-secret-de-l-auteur')
+
+    expect(res.status).toBe(200)
+    expect(res.body.report.anonymous_token).toBeUndefined()
+  })
+
+  /** Des identifiants de comptes corrélables d'un signalement à l'autre. */
+  it('keeps the author account and the INSEE code for the team only', async () => {
+    const row = {
+      id: 'r1',
+      tenant_id: 'tenant-1',
+      is_published: true,
+      user_id: 'compte-de-l-habitant',
+      insee_code: '28134',
+      anonymous_token: null,
+    }
+
+    mockDetail(row)
+    const passerby = await request(makeApp()).get('/api/reports/r1')
+    expect(passerby.body.report.user_id).toBeUndefined()
+    expect(passerby.body.report.insee_code).toBeUndefined()
+
+    teamRole = 'agent'
+    mockDetail(row)
+    const agent = await request(makeApp()).get('/api/reports/r1')
+    expect(agent.body.report.user_id).toBe('compte-de-l-habitant')
+    expect(agent.body.report.insee_code).toBe('28134')
+  })
+
+  /**
+   * Le journal : les étapes et leurs dates sont publiques — la frise les
+   * affiche — mais le motif est écrit par un agent pour ses collègues, et
+   * nomme parfois un prestataire ou la raison d'un retour en arrière.
+   */
+  it('hides the journal reasons from the public, and keeps them for the team', async () => {
+    const entry = {
+      id: 'h1',
+      old_status: 'en_attente',
+      new_status: 'pris_en_charge',
+      changed_at: '2026-06-01T08:00:00Z',
+      agent_id: 'agent-1',
+      comment: 'Vu avec la régie, intervention jeudi',
+    }
+
+    mockDetail({ id: 'r1', tenant_id: 'tenant-1', is_published: true, user_id: null }, [entry])
+    const passerby = await request(makeApp()).get('/api/reports/r1')
+    expect(passerby.body.history[0].new_status).toBe('pris_en_charge')
+    expect(passerby.body.history[0].changed_at).toBe('2026-06-01T08:00:00Z')
+    expect(passerby.body.history[0].comment).toBeUndefined()
+    expect(passerby.body.history[0].agent_id).toBeUndefined()
+
+    teamRole = 'agent'
+    mockDetail({ id: 'r1', tenant_id: 'tenant-1', is_published: true, user_id: null }, [entry])
+    const agent = await request(makeApp()).get('/api/reports/r1')
+    expect(agent.body.history[0].comment).toBe('Vu avec la régie, intervention jeudi')
+  })
+
+  /**
+   * La fiche porte le régime de **sa** commune.
+   *
+   * Cette route ignore `X-Tenant-Slug` : on ouvre son signalement où qu'on
+   * soit. L'application lisait donc le `partner` de la commune consultée —
+   * faux dès qu'on arrive par une notification ou un lien d'e-mail.
+   */
+  it('says whether the reports own commune has a town hall', async () => {
+    tenantStatus = 'community'
+    mockDetail({ id: 'r1', tenant_id: 'tenant-1', is_published: true, user_id: null })
+
+    const res = await request(makeApp()).get('/api/reports/r1')
+
+    expect(res.body.report.partner).toBe(false)
+  })
+
+  it('says so for a partner commune too', async () => {
+    tenantStatus = 'active'
+    mockDetail({ id: 'r1', tenant_id: 'tenant-1', is_published: true, user_id: null })
+
+    const res = await request(makeApp()).get('/api/reports/r1')
+
+    expect(res.body.report.partner).toBe(true)
+  })
+
+  /** Une session anonyme n'appartient à aucune équipe : c'est une preuve d'origine. */
+  it('treats an anonymous session as a passer-by', async () => {
+    teamRole = 'admin'
+    mockDetail({
+      id: 'r1',
+      tenant_id: 'tenant-1',
+      is_published: true,
+      user_id: 'quelqu-un',
+      anonymous_token: null,
+    })
+
+    const res = await request(makeApp({ anonymousSession: true })).get('/api/reports/r1')
+
+    expect(res.body.report.user_id).toBeUndefined()
+  })
 
   it('serves a published report to anyone, from any commune', async () => {
     mockDetail({ id: 'r1', tenant_id: 'other-tenant', is_published: true, user_id: null })

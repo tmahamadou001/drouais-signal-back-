@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../../lib/supabaseAdmin.js', () => ({
@@ -108,5 +109,55 @@ describe('unsubscribe token', () => {
     // Une URL traverse les journaux, les référents et l'historique : l'adresse
     // voyage dans le jeton signé, jamais en clair à côté.
     expect(unsubscribeUrl('jean@exemple.fr')).not.toContain('jean@exemple.fr')
+  })
+})
+
+/**
+ * Un lien de désabonnement a une durée de vie.
+ *
+ * Il n'en avait pas : un e-mail archivé restait indéfiniment un bouton « faire
+ * taire cette adresse » pour qui le retrouvait.
+ */
+describe('how long an unsubscribe link lasts', () => {
+  const EMAIL = 'habitant@exemple.fr'
+  const JOUR = 86_400_000
+
+  it('accepts a fresh token', () => {
+    expect(emailFromUnsubscribeToken(unsubscribeToken(EMAIL))).toBe(EMAIL)
+  })
+
+  it('accepts one issued within the window', () => {
+    const token = unsubscribeToken(EMAIL, Date.now() - 80 * JOUR)
+
+    expect(emailFromUnsubscribeToken(token)).toBe(EMAIL)
+  })
+
+  it('refuses one issued too long ago', () => {
+    const token = unsubscribeToken(EMAIL, Date.now() - 100 * JOUR)
+
+    expect(emailFromUnsubscribeToken(token)).toBeNull()
+  })
+
+  /** L'horodatage est dans la signature : on ne peut pas le rajeunir. */
+  it('cannot be back-dated without breaking the signature', () => {
+    const token = unsubscribeToken(EMAIL, Date.now() - 100 * JOUR)
+    const [, signature] = token.split('.')
+    const forged = Buffer.from(`${EMAIL}|${Date.now()}`).toString('base64url')
+
+    expect(emailFromUnsubscribeToken(`${forged}.${signature}`)).toBeNull()
+  })
+
+  /**
+   * Les jetons déjà partis ne portent pas d'horodatage. Les refuser casserait
+   * le désabonnement depuis tous les e-mails en circulation — le geste qu'on
+   * ne doit jamais rendre difficile.
+   */
+  it('still accepts the tokens already out there, which carry no date', () => {
+    const legacy = Buffer.from(EMAIL).toString('base64url')
+    const signature = createHmac('sha256', process.env.SUPABASE_SERVICE_ROLE_KEY || 'dev-unsubscribe-secret')
+      .update(legacy)
+      .digest('base64url')
+
+    expect(emailFromUnsubscribeToken(`${legacy}.${signature}`)).toBe(EMAIL)
   })
 })

@@ -35,6 +35,8 @@ const WEB_URL = process.env.CLIENT_URL?.startsWith('https://')
  * foi — ils étaient simplement invisibles de tous sauf d'eux. Les publier est
  * ce qui donne à la commune qui signe quelque chose à traiter dès le premier
  * jour, et c'est l'argument qui l'a convaincue.
+ *
+ * À une exception près : ce qu'un modérateur a retiré. Voir `retracted_at`.
  */
 export async function publishTenantHistory(tenantId: string): Promise<number> {
   const { data, error } = await supabaseAdmin
@@ -42,6 +44,11 @@ export async function publishTenantHistory(tenantId: string): Promise<number> {
     .update({ is_published: true })
     .eq('tenant_id', tenantId)
     .eq('is_published', false)
+    // Ce qu'un modérateur a retiré ne revient pas par la porte de côté.
+    // Rouvrir une commune republiait tout ce qui n'était pas publié, sans
+    // distinguer « jamais publié » de « retiré parce qu'il ne devait pas
+    // l'être » (migration 045).
+    .is('retracted_at', null)
     .select('id')
 
   if (error) {

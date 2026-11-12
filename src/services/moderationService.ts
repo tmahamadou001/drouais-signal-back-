@@ -138,9 +138,23 @@ async function moderatable(reportId: string) {
 export async function retractReport(reportId: string): Promise<{ title: string; tenantId: string; tenantSlug: string }> {
   const { report, tenantSlug } = await moderatable(reportId)
 
+  /**
+   * `retracted_at` dit *pourquoi* le signalement n'est pas publié.
+   *
+   * `is_published` portait deux significations incompatibles : « jamais
+   * publié, la commune est silencieuse » et « retiré par un modérateur ».
+   * `publishTenantHistory` republiait donc tout ce qui était à faux — et
+   * rouvrir une commune (community → prospect → community) remettait en ligne
+   * la photo de plaque d'immatriculation qu'on venait d'en retirer, l'audit
+   * disant seulement « commune ouverte ».
+   */
   const { error } = await supabaseAdmin
     .from('reports')
-    .update({ is_published: false, updated_at: new Date().toISOString() })
+    .update({
+      is_published: false,
+      retracted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', reportId)
 
   if (error) throw error
@@ -154,7 +168,13 @@ export async function restoreReport(reportId: string): Promise<{ title: string; 
 
   const { error } = await supabaseAdmin
     .from('reports')
-    .update({ is_published: true, updated_at: new Date().toISOString() })
+    .update({
+      is_published: true,
+      // La marque de modération s'efface avec elle : republier, c'est revenir
+      // sur le retrait, pas le contourner.
+      retracted_at: null,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', reportId)
 
   if (error) throw error

@@ -5,12 +5,15 @@ import { createTestApp } from '../helpers/createTestApp.js'
 vi.mock('../../lib/supabaseAdmin.js', () => ({ supabaseAdmin: { from: vi.fn() } }))
 vi.mock('../../middleware/rateLimits.js', () => ({
   publicTenantsLimiter: (_req: any, _res: any, next: any) => next(),
+  waitlistLimiter: (_req: any, _res: any, next: any) => next(),
   geoResolveLimiter: (_req: any, _res: any, next: any) => next(),
 }))
 vi.mock('../../services/geoRouting.js', () => ({ resolve: vi.fn(), isPlausiblePosition: vi.fn() }))
 vi.mock('../../services/prospectService.js', () => ({ joinWaitlist: vi.fn() }))
+vi.mock('../../services/categoryService.js', () => ({ resolveActiveCategories: vi.fn() }))
 
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
+import { resolveActiveCategories } from '../../services/categoryService.js'
 import tenantsRouter from '../../routes/tenants.js'
 
 const app = () => createTestApp('/api/tenants', tenantsRouter)
@@ -92,5 +95,38 @@ describe('GET /api/tenants/public', () => {
     const res = await request(app()).get('/api/tenants/public')
 
     expect(res.status).toBe(200)
+  })
+})
+
+
+/**
+ * La taxonomie nationale, sans commune.
+ *
+ * Le seul moyen pour quelqu'un qui se trouve dans une commune que la
+ * plateforme ne couvre pas de rédiger son signalement : il n'y a pas de tenant
+ * à interroger, et un formulaire sans catégories n'aboutit pas.
+ */
+describe('GET /api/tenants/categories', () => {
+  it('answers without a commune, because there may not be one yet', async () => {
+    vi.mocked(resolveActiveCategories).mockResolvedValue([
+      { slug: 'voirie', label: 'Voirie' },
+      { slug: 'eclairage', label: 'Éclairage' },
+    ] as never)
+
+    const res = await request(app()).get('/api/tenants/categories')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toHaveLength(2)
+    expect(resolveActiveCategories).toHaveBeenCalledWith(null)
+  })
+
+  /** Une liste qu'on propose à un citoyen, pas un écran de réglage. */
+  it('leaves out the ones no commune offers any more', async () => {
+    vi.mocked(resolveActiveCategories).mockResolvedValue([] as never)
+
+    const res = await request(app()).get('/api/tenants/categories')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual([])
   })
 })

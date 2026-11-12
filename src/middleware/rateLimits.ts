@@ -1,5 +1,15 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import type { Request } from 'express'
+import { sharedStore } from '../lib/rateLimitStore.js'
+
+/*
+ * Chaque limiteur compte dans son propre espace, partagé entre les instances.
+ *
+ * En mémoire par défaut — donc **par processus**, ce qui multiplie chaque
+ * plafond par le nombre d'instances et le remet à zéro à chaque déploiement.
+ * Avec `REDIS_URL`, le comptage est partagé et le plafond devient celui qu'on
+ * a écrit. Voir `lib/rateLimitStore.ts`.
+ */
 
 /**
  * Rate-limit key: the signed-in user when there is one, otherwise the IP.
@@ -34,6 +44,10 @@ function userOrIpKey(req: Request): string {
  * Raising this does not loosen the report, vote or analysis limits.
  */
 export const globalApiLimiter = rateLimit({
+  store: sharedStore('globalApi'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 600,
   message: { error: 'rate_limit', message: 'Trop de requêtes. Réessayez dans 15 minutes.' },
@@ -43,6 +57,10 @@ export const globalApiLimiter = rateLimit({
 
 // Auth endpoints (login, register)
 export const authLimiter = rateLimit({
+  store: sharedStore('auth'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   windowMs: 15 * 60 * 1000,
   max: 5,
   message: { error: 'rate_limit', message: 'Trop de tentatives. Réessayez dans 15 minutes.' },
@@ -52,6 +70,10 @@ export const authLimiter = rateLimit({
 
 // Create report limiter
 export const createReportLimiter = rateLimit({
+  store: sharedStore('createReport'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   keyGenerator: userOrIpKey,
   windowMs: 1 * 60 * 1000,
   max: 3,
@@ -61,6 +83,10 @@ export const createReportLimiter = rateLimit({
 })
 
 export const duplicateCheckLimiter = rateLimit({
+  store: sharedStore('duplicateCheck'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   keyGenerator: userOrIpKey,
   windowMs: 1 * 60 * 1000,
   max: 10,
@@ -70,6 +96,10 @@ export const duplicateCheckLimiter = rateLimit({
 })
 
 export const voteLimiter = rateLimit({
+  store: sharedStore('vote'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   keyGenerator: userOrIpKey,
   windowMs: 1 * 60 * 1000,
   max: 5,
@@ -79,6 +109,10 @@ export const voteLimiter = rateLimit({
 })
 
 export const voteReadLimiter = rateLimit({
+  store: sharedStore('voteRead'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   keyGenerator: userOrIpKey,
   windowMs: 1 * 60 * 1000,
   max: 60,
@@ -97,6 +131,10 @@ export const voteReadLimiter = rateLimit({
  * de nous coûter quoi que ce soit.
  */
 export const geoResolveLimiter = rateLimit({
+  store: sharedStore('geoResolve'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   keyGenerator: userOrIpKey,
   windowMs: 1 * 60 * 1000,
   max: 20,
@@ -114,6 +152,10 @@ export const geoResolveLimiter = rateLimit({
  * boucle ne soit pas gratuit.
  */
 export const publicTenantsLimiter = rateLimit({
+  store: sharedStore('publicTenants'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   windowMs: 60_000,
   max: 20,
   standardHeaders: true,
@@ -121,7 +163,36 @@ export const publicTenantsLimiter = rateLimit({
   message: { error: 'rate_limited', message: 'Trop de requêtes. Réessayez dans une minute.' },
 })
 
+/**
+ * S'inscrire pour être prévenu quand sa commune arrive.
+ *
+ * Écriture **sans compte** : la route insère une adresse e-mail dans
+ * `commune_waitlist`, laquelle alimente ensuite un envoi Resend de masse le
+ * jour où la commune est activée. Seul le plafond global de 600 requêtes par
+ * quart d'heure la couvrait : de quoi déposer des milliers d'adresses
+ * arbitraires, et faire partir un jour, en notre nom, autant de messages non
+ * sollicités. C'est la réputation d'expéditeur du domaine qui se joue là.
+ *
+ * Trois par heure : personne n'inscrit sa commune quatre fois.
+ */
+export const waitlistLimiter = rateLimit({
+  store: sharedStore('waitlist'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  message: { error: 'rate_limit', message: 'Trop de demandes. Réessayez dans une heure.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userOrIpKey,
+})
+
 export const analyzeLimiter = rateLimit({
+  store: sharedStore('analyze'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   keyGenerator: userOrIpKey,
   windowMs: 1 * 60 * 1000,
   max: 10,
@@ -131,6 +202,10 @@ export const analyzeLimiter = rateLimit({
 })
 
 export const heatmapLimiter = rateLimit({
+  store: sharedStore('heatmap'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   windowMs: 1 * 60 * 1000,
   max: 30,
   message: { error: 'rate_limit', message: 'Trop de requêtes heatmap. Réessayez dans 1 minute.' },
@@ -140,6 +215,10 @@ export const heatmapLimiter = rateLimit({
 
 // Admin slow down (progressive delay)
 export const adminSlowDown = rateLimit({
+  store: sharedStore('adminslow'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   windowMs: 1 * 60 * 1000,
   max: 20,
   message: { error: 'rate_limit', message: 'Trop de requêtes admin. Réessayez dans 1 minute.' },
@@ -156,6 +235,10 @@ export const adminSlowDown = rateLimit({
  * de levier contre l'API.
  */
 export const serviceHandoffLimiter = rateLimit({
+  store: sharedStore('serviceHandoff'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   windowMs: 15 * 60 * 1000,
   max: 60,
   standardHeaders: true,
@@ -164,6 +247,10 @@ export const serviceHandoffLimiter = rateLimit({
 })
 
 export const weeklyReportLimiter = rateLimit({
+  store: sharedStore('weeklyReport'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   windowMs: 60 * 60 * 1000, // 1 heure
   max: 5,
   message: { error: 'rate_limit', message: 'Trop d\'envois de rapports. Réessayez dans 1 heure.' },
@@ -173,6 +260,10 @@ export const weeklyReportLimiter = rateLimit({
 
 // Comments limiter (10 messages per hour)
 export const commentsLimiter = rateLimit({
+  store: sharedStore('comments'),
+  // Une panne de Redis laisse passer plutôt que de refuser : un plafond
+  // temporairement absent vaut mieux qu'une API muette.
+  passOnStoreError: true,
   windowMs: 60 * 60 * 1000, // 1 heure
   max: 10,
   message: { error: 'rate_limit', message: 'Trop de messages. Réessayez dans 1 heure.' },

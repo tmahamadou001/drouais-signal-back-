@@ -26,6 +26,8 @@ export type AuditAction =
   | 'user.invited'
   | 'user.role_changed'
   | 'user.revoked'
+  // Suppression de compte demandée par la personne elle-même, depuis l'app.
+  | 'user.deleted'
   | 'report.created'
   | 'report.status_changed'
   | 'report.service_notified'

@@ -39,6 +39,23 @@ export const RESOLUTION_RADIUS_M = 150
  */
 export const REQUIRED_CONCURRING_CLAIMS = 2
 
+/**
+ * L'ancienneté minimale d'un compte pour que son constat compte.
+ *
+ * Deux constats concordants ferment le signalement d'autrui. La session
+ * anonyme était déjà refusée — mais `POST /api/auth/register` est ouvert, et
+ * rien n'empêchait d'ouvrir deux comptes dans la minute depuis le même
+ * téléphone. Il suffisait d'être une fois à moins de 150 m pour faire
+ * disparaître le signalement d'un voisin, ou pour vider une file qu'on trouve
+ * encombrante.
+ *
+ * Une adresse confirmée et sept jours d'ancienneté ne rendent pas la triche
+ * impossible : ils lui donnent un coût et un délai, ce qui suffit à écarter le
+ * geste d'humeur. L'auteur, lui, n'est pas concerné — c'est son signalement,
+ * et son compte a l'âge qu'il a.
+ */
+export const ACCOUNT_MIN_AGE_DAYS = 7
+
 export type ClaimKind = 'repaired' | 'still_there'
 
 export interface ResolutionState {
@@ -178,6 +195,28 @@ export async function claimResolution(params: {
       'not_resident_resolved',
       'Ce signalement n’a pas été fermé par des habitants : il n’y a rien à contester ici.'
     )
+  }
+
+  /**
+   * Le constat d'un tiers suppose un compte établi.
+   *
+   * Vérifié avant la distance et avant l'écriture : un compte créé pour
+   * l'occasion ne doit même pas laisser de trace de tentative.
+   */
+  if (report.user_id !== params.userId) {
+    const { data: account } = await supabaseAdmin.auth.admin.getUserById(params.userId)
+    const user = account?.user
+
+    const createdAt = user?.created_at ? new Date(user.created_at).getTime() : Date.now()
+    const ageDays = (Date.now() - createdAt) / 86_400_000
+
+    if (!user?.email_confirmed_at || ageDays < ACCOUNT_MIN_AGE_DAYS) {
+      throw new AppError(
+        403,
+        'account_too_new',
+        'Constater la réparation du signalement d’un autre habitant demande un compte confirmé, créé depuis au moins une semaine.'
+      )
+    }
   }
 
   const distance = distanceMeters(params.lat, params.lng, report.lat, report.lng)

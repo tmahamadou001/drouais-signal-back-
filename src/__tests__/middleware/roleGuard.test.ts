@@ -14,7 +14,7 @@ vi.mock('../../lib/supabaseAdmin.js', () => ({
 }))
 
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
-import { requireTenantAdmin, requireSuperAdmin, requireAgent, roleCache } from '../../middleware/roleGuard.js'
+import { requireTenantAdmin, requirePlatformAdmin, requireAgent, roleCache } from '../../middleware/roleGuard.js'
 
 const TENANT = {
   id: 'tenant-1',
@@ -57,31 +57,50 @@ function mockTenantUser(role: string | null) {
   vi.mocked(supabaseAdmin.from).mockReturnValue({ select } as any)
 }
 
-describe('requireSuperAdmin', () => {
+/**
+ * Le rôle de plateforme ne dépend d'aucune commune.
+ *
+ * Il se lit dans `app_metadata`, que seule la clé `service_role` peut écrire,
+ * et `verifyToken` l'a déjà posé sur la requête. Le garde précédent passait
+ * par `requireRole`, donc exigeait `req.tenant` — sur des routes qui
+ * travaillent justement en travers des communes.
+ */
+describe('requirePlatformAdmin', () => {
   const next = vi.fn() as unknown as NextFunction
   beforeEach(() => { vi.clearAllMocks(); roleCache.clear() })
 
-  it('passes when app_metadata.role is super_admin', async () => {
-    mockAuthUser('super_admin')
-    const req = makeReq()
-    await (requireSuperAdmin as Function)(req, {} as Response, next)
+  it('passes a platform role read from the token', () => {
+    const req = makeReq({ userRole: 'super_admin' } as Partial<Request>)
+    requirePlatformAdmin(req, {} as Response, next)
     expect(next).toHaveBeenCalledWith()
   })
 
-  it('calls next(AppError 403) when app_metadata.role is not super_admin', async () => {
-    mockAuthUser(null)
-    mockTenantUser('admin')
-    const req = makeReq()
-    await (requireSuperAdmin as Function)(req, {} as Response, next)
-    const err = (next as ReturnType<typeof vi.fn>).mock.calls[0][0] as AppError
-    expect(err.status).toBe(403)
+  /** Et sans aucune commune dans la requête : c'est tout l'objet du garde. */
+  it('passes without any commune on the request', () => {
+    const req = makeReq({ userRole: 'super_admin', tenant: undefined } as Partial<Request>)
+    requirePlatformAdmin(req, {} as Response, next)
+    expect(next).toHaveBeenCalledWith()
   })
 
-  it('calls next(AppError 401) when userId is missing', async () => {
-    const req = makeReq({ userId: undefined } as any)
-    await (requireSuperAdmin as Function)(req, {} as Response, next)
-    const err = (next as ReturnType<typeof vi.fn>).mock.calls[0][0] as AppError
-    expect(err.status).toBe(401)
+  it('refuses a commune administrator', () => {
+    const req = makeReq({ userRole: 'admin' } as Partial<Request>)
+    requirePlatformAdmin(req, {} as Response, next)
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }))
+  })
+
+  it('refuses a caller with no session', () => {
+    const req = makeReq({ userId: undefined } as Partial<Request>)
+    requirePlatformAdmin(req, {} as Response, next)
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 401 }))
+  })
+
+  /** Jamais depuis `tenant_users` : le rôle de plateforme n'y a pas sa place. */
+  it('does not read the role from the commune team', () => {
+    mockAuthUser(null)
+    mockTenantUser('super_admin')
+    const req = makeReq({ userRole: 'citizen' } as Partial<Request>)
+    requirePlatformAdmin(req, {} as Response, next)
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }))
   })
 })
 

@@ -135,6 +135,10 @@ export async function optIn(email: string): Promise<void> {
  * est qu'une rotation de la clé invalide les liens déjà envoyés — acceptable
  * pour des liens dont la durée de vie utile se compte en jours, et la raison
  * pour laquelle la variable dédiée existe.
+ *
+ * Elle est désormais **attendue en production** (`lib/env.ts`) : faire servir
+ * la clé la plus sensible du système à un second usage ajoute un oracle, même
+ * faible, et rien n'oblige à le garder.
  */
 function secret(): string {
   return process.env.UNSUBSCRIBE_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || 'dev-unsubscribe-secret'
@@ -155,8 +159,20 @@ function normalize(email: string): string {
  * clair : une URL traverse les journaux du serveur, les référents et
  * l'historique du navigateur, et une adresse e-mail n'a rien à y faire.
  */
-export function unsubscribeToken(email: string): string {
-  const payload = Buffer.from(normalize(email)).toString('base64url')
+/**
+ * Combien de temps un lien de désabonnement reste valable.
+ *
+ * Il n'expirait pas : un e-mail archivé restait indéfiniment un bouton « faire
+ * taire cette adresse » pour qui le retrouvait — une boîte partagée, une fuite
+ * d'archives, un ancien collègue. Quatre-vingt-dix jours couvrent largement le
+ * temps où l'on décide de se désabonner d'un message qu'on vient de recevoir.
+ */
+const UNSUBSCRIBE_TTL_DAYS = 90
+
+export function unsubscribeToken(email: string, issuedAt = Date.now()): string {
+  // L'horodatage entre dans la charge utile, donc dans la signature : on ne
+  // peut pas rajeunir un jeton sans la refaire.
+  const payload = Buffer.from(`${normalize(email)}|${issuedAt}`).toString('base64url')
   const signature = crypto.createHmac('sha256', secret()).update(payload).digest('base64url')
 
   return `${payload}.${signature}`
@@ -176,9 +192,26 @@ export function emailFromUnsubscribeToken(token: string): string | null {
   if (expected.length !== received.length) return null
   if (!crypto.timingSafeEqual(expected, received)) return null
 
-  const email = Buffer.from(payload, 'base64url').toString('utf8')
+  const decoded = Buffer.from(payload, 'base64url').toString('utf8')
 
-  return email.includes('@') ? email : null
+  /**
+   * Deux formes de charge utile, et c'est volontaire.
+   *
+   * Les jetons émis avant l'ajout de l'horodatage ne portent que l'adresse.
+   * Les refuser ferait échouer le désabonnement depuis tous les e-mails déjà
+   * partis — exactement le geste qu'on ne doit jamais rendre difficile. Ils
+   * restent donc acceptés, sans expiration, jusqu'à ce qu'ils disparaissent
+   * des boîtes.
+   */
+  const [email, issuedAt] = decoded.split('|')
+  if (!email?.includes('@')) return null
+
+  if (issuedAt) {
+    const age = Date.now() - Number(issuedAt)
+    if (!Number.isFinite(age) || age > UNSUBSCRIBE_TTL_DAYS * 86_400_000) return null
+  }
+
+  return email
 }
 
 /** L'URL que porte l'en-tête `List-Unsubscribe`, et le lien en pied d'e-mail. */

@@ -1,3 +1,4 @@
+import { teamRoleFrom } from './teamRoles.js'
 import { supabaseAdmin } from './supabaseAdmin.js'
 import type { Session, User } from '@supabase/supabase-js'
 
@@ -51,7 +52,17 @@ export async function resolveRole(user: User, tenantId?: string | null): Promise
     .eq('is_active', true)
     .maybeSingle()
 
-  return (data?.role as TenantRole) ?? 'citizen'
+  /**
+   * Même filtre que la garde (`middleware/roleGuard.ts`).
+   *
+   * La valeur était castée et rendue telle quelle : une ligne `super_admin`
+   * dans `tenant_users` — migration maladroite, main sur le tableau de bord,
+   * contrainte `CHECK` perdue — aurait été rendue au client par `/login` et
+   * `/session`, et le routeur web aurait ouvert l'interface de plateforme. Le
+   * serveur, lui, aurait tenu : c'est de la défense en profondeur, et elle doit
+   * dire la même chose des deux côtés.
+   */
+  return teamRoleFrom(data?.role) ?? 'citizen'
 }
 
 export async function buildAuthPayload(

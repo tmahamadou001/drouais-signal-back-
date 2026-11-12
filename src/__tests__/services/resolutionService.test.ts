@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../../lib/supabaseAdmin.js', () => ({
-  supabaseAdmin: { from: vi.fn() },
+  supabaseAdmin: {
+    from: vi.fn(),
+    auth: { admin: { getUserById: vi.fn() } },
+  },
 }))
 
 vi.mock('../../services/pushService.js', () => ({
@@ -118,7 +121,24 @@ function mockDb(scenario: Scenario = {}) {
   return spies
 }
 
-beforeEach(() => vi.clearAllMocks())
+/** Un compte confirmé et assez ancien : le cas nominal d'un habitant. */
+function accountAged(days: number, confirmed = true) {
+  vi.mocked(supabaseAdmin.auth.admin.getUserById).mockResolvedValue({
+    data: {
+      user: {
+        id: PASSERBY,
+        created_at: new Date(Date.now() - days * 86_400_000).toISOString(),
+        email_confirmed_at: confirmed ? '2026-01-01T00:00:00Z' : null,
+      },
+    },
+    error: null,
+  } as never)
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  accountAged(30)
+})
 
 describe('decideFlip', () => {
   it('lets the author close their own report alone', () => {
@@ -342,6 +362,47 @@ describe('claimResolution', () => {
       expect(pushResidentResolution).toHaveBeenCalledWith(
         expect.objectContaining({ reopened: true })
       )
+    })
+  })
+
+  /**
+   * Deux inscriptions gratuites fermaient le signalement d'autrui : la session
+   * anonyme était refusée, mais `register` est ouvert et rien n'empêchait
+   * d'ouvrir deux comptes dans la minute.
+   */
+  describe('whose claim counts', () => {
+    it('refuses a brand-new account', async () => {
+      mockDb()
+      accountAged(1)
+
+      await expect(claim()).rejects.toMatchObject({ status: 403, code: 'account_too_new' })
+    })
+
+    it('refuses an account whose address was never confirmed', async () => {
+      mockDb()
+      accountAged(60, false)
+
+      await expect(claim()).rejects.toMatchObject({ code: 'account_too_new' })
+    })
+
+    it('refuses before anything is written', async () => {
+      const spies = mockDb()
+      accountAged(1)
+
+      await claim().catch(() => undefined)
+
+      expect(spies.upsert).not.toHaveBeenCalled()
+    })
+
+    /** L'auteur ferme le sien quel que soit l'âge de son compte. */
+    it('never holds the author to that rule', async () => {
+      const spies = mockDb({ claims: [{ user_id: AUTHOR, kind: 'repaired' }] })
+      accountAged(0, false)
+
+      const state = await claim({ userId: AUTHOR })
+
+      expect(state.status).toBe('resolu')
+      expect(spies.upsert).toHaveBeenCalled()
     })
   })
 

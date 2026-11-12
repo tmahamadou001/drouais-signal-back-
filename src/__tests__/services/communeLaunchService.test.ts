@@ -42,9 +42,15 @@ function mockTables({
 }) {
   const notified: string[] = []
 
+  /** `is` filtre les signalements retirés par la modération (migration 045). */
+  const filters: string[] = []
   const reportsUpdate = vi.fn().mockReturnValue({
     eq: vi.fn().mockReturnValue({
       eq: vi.fn().mockReturnValue({
+        is: vi.fn().mockImplementation((column: string) => {
+          filters.push(column)
+          return { select: vi.fn().mockResolvedValue({ data: unpublished, error: null }) }
+        }),
         select: vi.fn().mockResolvedValue({ data: unpublished, error: null }),
       }),
     }),
@@ -76,7 +82,7 @@ function mockTables({
     throw new Error(`table inattendue : ${table}`)
   })
 
-  return { notified, reportsUpdate }
+  return { notified, reportsUpdate, filters }
 }
 
 beforeEach(() => {
@@ -89,6 +95,18 @@ describe('publishTenantHistory', () => {
     mockTables({ unpublished: [{ id: 'r1' }, { id: 'r2' }] })
 
     expect(await publishTenantHistory('tenant-1')).toBe(2)
+  })
+
+  /**
+   * Rouvrir une commune ne doit pas défaire la modération : la photo qu'on en
+   * a retirée ne revient pas parce que la commune a rouvert.
+   */
+  it('leaves behind what a moderator took down', async () => {
+    const { filters } = mockTables({ unpublished: [{ id: 'r1' }] })
+
+    await publishTenantHistory('tenant-1')
+
+    expect(filters).toContain('retracted_at')
   })
 
   it('reports nothing published when there is no history', async () => {

@@ -47,6 +47,10 @@ vi.mock('../../middleware/roleGuard.js', () => ({
     req.userId = 'super-admin-id'
     next()
   },
+  requirePlatformAdmin: (req: any, _res: any, next: any) => {
+    req.userId = 'super-admin-id'
+    next()
+  },
 }))
 
 vi.mock('../../lib/authHelpers.js', () => ({

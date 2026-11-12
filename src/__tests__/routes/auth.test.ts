@@ -18,6 +18,9 @@ vi.mock('resend', () => ({
  * travel with that user's token instead of the service key — the whole process
  * silently loses its RLS bypass. See `lib/supabaseAuthClient.ts`.
  */
+/** Session anonyme de l'application, ou compte réel : décidé par test. */
+let anonymousSession = false
+
 const { credentialsAuth } = vi.hoisted(() => ({
   credentialsAuth: { signInWithPassword: vi.fn(), signUp: vi.fn(), verifyOtp: vi.fn() },
 }))
@@ -61,12 +64,14 @@ vi.mock('../../middleware/auth.js', () => ({
       return
     }
     req.userId = 'user-abc'
+    req.isAnonymousUser = anonymousSession
     next()
   },
 }))
 
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
 import authRouter from '../../routes/auth.js'
+import { rememberRedemption, clearRedemptions } from '../../services/accountLinkService.js'
 
 function makeApp() {
   const app = express()
@@ -293,7 +298,13 @@ describe('POST /api/auth/logout', () => {
 // ─── POST /api/auth/set-password ─────────────────────────────────────────────
 
 describe('POST /api/auth/set-password', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    clearRedemptions()
+    // Le parcours réel : l'écran `/set-password` vient d'échanger le lien
+    // reçu par e-mail, et c'est cet échange qui ouvre le droit (M4).
+    rememberRedemption('user-abc')
+  })
 
   it('returns 401 when Authorization header is missing', async () => {
     const res = await request(makeApp())
@@ -556,5 +567,63 @@ describe('POST /api/auth/verify-link', () => {
     expect(short.status).toBe(422)
     expect(long.status).toBe(422)
     expect(credentialsAuth.verifyOtp).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Poser un mot de passe demande d'être passé par un lien.
+ *
+ * Tout porteur d'un jeton d'accès valide le faisait : un jeton recopié sur un
+ * poste partagé devenait une prise de contrôle définitive, et la déconnexion
+ * globale n'y pouvait plus rien.
+ */
+describe('what set-password demands beyond a session', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    clearRedemptions()
+  })
+
+  it('refuses a session that did not come from a link', async () => {
+    const res = await request(makeApp())
+      .post('/api/auth/set-password')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ password: 'NewPassword1!' })
+
+    expect(res.status).toBe(403)
+    expect(res.body.error).toBe('link_required')
+    expect(supabaseAdmin.auth.admin.updateUserById).not.toHaveBeenCalled()
+  })
+
+  /** Une autorisation sert une fois : deux appels ne posent pas deux mots de passe. */
+  it('spends the permission, so a replay is refused', async () => {
+    rememberRedemption('user-abc')
+    vi.mocked(supabaseAdmin.auth.admin.updateUserById).mockResolvedValue({ error: null } as never)
+
+    const first = await request(makeApp())
+      .post('/api/auth/set-password')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ password: 'NewPassword1!' })
+
+    const second = await request(makeApp())
+      .post('/api/auth/set-password')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ password: 'AutreMotDePasse1!' })
+
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(403)
+  })
+
+  /** Une session anonyme ne désigne personne : rien à protéger, rien à poser. */
+  it('never lets an anonymous session set one', async () => {
+    rememberRedemption('user-abc')
+    anonymousSession = true
+
+    const res = await request(makeApp())
+      .post('/api/auth/set-password')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ password: 'NewPassword1!' })
+
+    anonymousSession = false
+    expect(res.status).toBe(403)
   })
 })

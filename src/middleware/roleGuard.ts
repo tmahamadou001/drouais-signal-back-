@@ -105,7 +105,39 @@ export function requireRole(...allowedRoles: UserRole[]) {
  * comme agent recevait donc son e-mail, choisissait son mot de passe, et se
  * faisait éjecter à la connexion — le rôle n'était qu'une pastille de couleur.
  */
-export const requireSuperAdmin = requireRole('super_admin')
+/**
+ * Le rôle de plateforme, sans dépendre d'une commune.
+ *
+ * `requireRole` exige `req.tenant` — ce qui est juste pour un rôle d'équipe,
+ * puisqu'il se détient *dans* une commune. Mais `/api/moderation`,
+ * `/api/tenant/all`, `/api/tenant/prospects` et la bascule de statut sont des
+ * routes de **plateforme** : elles travaillent en travers des communes, et
+ * répondaient pourtant « Tenant requis » sans en-tête — un slug quelconque
+ * suffisait à les satisfaire. Rien n'était ouvert (`app_metadata` est vérifié
+ * avant), mais le couplage était trompeur.
+ *
+ * Le rôle de plateforme vit dans `app_metadata`, que seule la clé
+ * `service_role` peut écrire : `verifyToken` l'a déjà lu.
+ */
+export function requirePlatformAdmin(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.userId) {
+    next(new AppError(401, 'unauthorized', 'Non authentifié.'))
+    return
+  }
+
+  if (req.userRole !== 'super_admin') {
+    next(new AppError(403, 'forbidden', 'Droits insuffisants.'))
+    return
+  }
+
+  next()
+}
+
+/*
+ * `requireSuperAdmin = requireRole('super_admin')` a été retiré : il exigeait
+ * `req.tenant`, alors qu'aucune des routes qu'il gardait n'appartient à une
+ * commune. `requirePlatformAdmin` les garde toutes désormais.
+ */
 export const requireTenantAdmin = requireRole('super_admin', 'admin')
 export const requireAgent = requireRole('super_admin', 'admin', 'agent')
 export const requireTeamMember = requireRole('super_admin', 'admin', 'agent', 'observer')

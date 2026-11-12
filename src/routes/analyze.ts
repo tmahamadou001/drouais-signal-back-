@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction, type Router as ExpressRouter } from 'express'
+import { verifyToken } from '../middleware/auth.js'
 import { analyzePhotoWithGemini, type TenantCategoryForPrompt } from '../lib/gemini.js'
 import { analyzePhotoWithClaude } from '../lib/claude.js'
 import { upload } from '../middleware/upload.js'
@@ -54,7 +55,15 @@ async function getCategoriesForPrompt(tenantId?: string): Promise<TenantCategory
 }
 
 // ─── POST /api/analyze-photo — Analyze photo with AI (Claude or Gemini) ───
-router.post('/', upload.single('photo'), async (req: Request, res: Response, next: NextFunction) => {
+/**
+ * `verifyToken` : l'analyse dépense des crédits chez un fournisseur d'IA.
+ *
+ * La route n'avait aucune authentification : n'importe qui pouvait faire
+ * analyser n'importe quelle image par votre compte, à votre charge, au rythme
+ * que `analyzeLimiter` autorise par adresse IP. L'application a toujours une
+ * session — anonyme au minimum — donc rien ne change pour un habitant.
+ */
+router.post('/', verifyToken, upload.single('photo'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!req.file) throw badRequest('Photo requise.')
 

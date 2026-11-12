@@ -1,14 +1,28 @@
 import { Router, type Request, type Response, NextFunction, type Router as ExpressRouter } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { verifyToken } from '../middleware/auth.js'
-import { requireSuperAdmin } from '../middleware/roleGuard.js'
-import { AppError, forbidden } from '../middleware/errorHandler.js'
+import { requirePlatformAdmin, requireTenantAdmin } from '../middleware/roleGuard.js'
+import { AppError } from '../middleware/errorHandler.js'
 import { readLimit } from '../lib/pagination.js'
+import { sanitizeSearch } from '../lib/reportFilters.js'
 
 const router: ExpressRouter = Router()
 
 // ─── GET /api/audit/logs ─── Super Admin / Tenant Admin ────────
-router.get('/logs', verifyToken, async (req: Request, res: Response, next: NextFunction) => {
+/**
+ * Le journal d'audit d'une commune.
+ *
+ * `requireTenantAdmin` plutôt qu'une vérification écrite ici : le code
+ * acceptait `agent`, alors que la matrice de `CLAUDE.md` réserve cette route
+ * aux administrateurs. Un technicien terrain lisait donc les adresses de toute
+ * l'équipe, les adresses IP, les agents utilisateurs et les métadonnées de
+ * chaque action de sa commune — un journal d'audit sert à contrôler ceux qui
+ * agissent, il ne peut pas être lisible par tous ceux qu'il surveille.
+ *
+ * Le garde rend aussi `super_admin` sans requête supplémentaire, ce que la
+ * vérification manuelle refaisait à la main.
+ */
+router.get('/logs', verifyToken, requireTenantAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const page = parseInt(req.query.page as string) || 1
     const limit = readLimit(req.query.limit)
@@ -21,24 +35,9 @@ router.get('/logs', verifyToken, async (req: Request, res: Response, next: NextF
     const startDate  = req.query.startDate as string | undefined
     const endDate    = req.query.endDate as string | undefined
 
-    const userRole = req.userRole
-    const isSuperAdmin = userRole === 'super_admin'
-
-    if (!isSuperAdmin) {
-      if (!req.tenant?.id) throw forbidden('Accès refusé.')
-
-      const { data: tenantUser } = await supabaseAdmin
-        .from('tenant_users')
-        .select('role')
-        .eq('user_id', req.userId!)
-        .eq('tenant_id', req.tenant.id)
-        .eq('is_active', true)
-        .single()
-
-      if (!tenantUser || (tenantUser.role !== 'admin' && tenantUser.role !== 'agent')) {
-        throw forbidden('Accès refusé.')
-      }
-    }
+    // `requireTenantAdmin` a déjà tranché : il ne reste qu'à savoir si l'on
+    // doit borner la lecture à une commune.
+    const isSuperAdmin = req.userRole === 'super_admin'
 
     let query = supabaseAdmin
       .from('audit_logs')
@@ -51,8 +50,20 @@ router.get('/logs', verifyToken, async (req: Request, res: Response, next: NextF
     if (tenantSlug) query = query.eq('tenant_slug', tenantSlug)
     if (userEmail)  query = query.ilike('user_email', `%${userEmail}%`)
     if (action)     query = query.eq('action', action)
-    if (search) {
-      query = query.or(`user_email.ilike.%${search}%,entity_id.ilike.%${search}%,metadata::text.ilike.%${search}%`)
+    /**
+     * Le terme de recherche est assaini avant d'entrer dans un `or=`.
+     *
+     * Les virgules et les parenthèses y sont des **opérateurs** : un terme brut
+     * réécrivait la clause, et au minimum provoquait des 500 à volonté.
+     * `sanitizeSearch` existait déjà pour les signalements et n'avait pas été
+     * appliqué ici — le même filtre, le même danger, un seul des deux protégé.
+     */
+    const safeSearch = sanitizeSearch(String(search ?? ''))
+
+    if (safeSearch) {
+      query = query.or(
+        `user_email.ilike.%${safeSearch}%,entity_id.ilike.%${safeSearch}%,metadata::text.ilike.%${safeSearch}%`
+      )
     }
     if (startDate) query = query.gte('created_at', startDate)
     if (endDate)   query = query.lte('created_at', endDate)
@@ -80,7 +91,7 @@ router.get('/logs', verifyToken, async (req: Request, res: Response, next: NextF
 })
 
 // ─── GET /api/audit/stats ─── Super Admin ───────────────────────
-router.get('/stats', verifyToken, requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/stats', verifyToken, requirePlatformAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const days = parseInt(req.query.days as string) || 30
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
@@ -128,7 +139,10 @@ router.get('/stats', verifyToken, requireSuperAdmin, async (req: Request, res: R
 })
 
 // ─── GET /api/audit/actions ─── Super Admin / Tenant Admin ──────
-router.get('/actions', verifyToken, (_req: Request, res: Response) => {
+// La nomenclature des actions auditées : ce que le back-office met dans son
+// filtre. Réservée à l'équipe, comme le journal qu'elle décrit — toute
+// session, y compris anonyme, y avait accès.
+router.get('/actions', verifyToken, requireTenantAdmin, (_req: Request, res: Response) => {
   res.json({
     actions: [
       'auth.login',
@@ -149,7 +163,7 @@ router.get('/actions', verifyToken, (_req: Request, res: Response) => {
 })
 
 // ─── GET /api/audit/tenants ─── Super Admin ─────────────────────
-router.get('/tenants', verifyToken, requireSuperAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/tenants', verifyToken, requirePlatformAdmin, async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('tenants')

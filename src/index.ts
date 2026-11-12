@@ -1,3 +1,5 @@
+import { isAllowedOrigin } from './lib/corsOrigin.js'
+import { readEnv, missingInProduction } from './lib/env.js'
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
@@ -37,6 +39,15 @@ import './cron/weeklyReport.js'
 import './cron/retention.js'
 
 
+/**
+ * La configuration est validée avant que la première route existe.
+ *
+ * Une variable absente ne produisait aucune erreur : chaque lecteur avait son
+ * repli, et le repli devenait la vérité sans que personne le décide. Mieux
+ * vaut refuser de démarrer que répondre faux pendant des mois.
+ */
+readEnv()
+
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
 
@@ -69,18 +80,21 @@ app.use(cors({
       callback(null, true)
       return
     }
-    const allowed =
-      origin.endsWith('.onsignale.fr') ||
-      origin === 'https://onsignale.fr' ||
-      origin === 'https://www.onsignale.fr' ||
-      origin.includes('localhost') ||
-      origin === process.env.CLIENT_URL
+    const allowed = isAllowedOrigin(origin, {
+      clientUrl: process.env.CLIENT_URL,
+      nodeEnv: process.env.NODE_ENV,
+    })
 
-    if (allowed) {
-      callback(null, true)
-    } else {
-      callback(new Error(`Not allowed by CORS: ${origin}`))
-    }
+    /**
+     * Un refus n'est pas une panne.
+     *
+     * Passer une `Error` au callback la fait remonter dans `errorHandler`, qui
+     * répond **500** : les tableaux de bord d'erreurs se remplissaient de
+     * pannes imaginaires à chaque requête d'une origine inconnue. `false` omet
+     * simplement l'en-tête, et c'est le navigateur qui bloque — ce qui est
+     * exactement le fonctionnement de CORS.
+     */
+    callback(null, allowed)
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -172,4 +186,10 @@ app.use(errorHandler)
 app.listen(PORT, () => {
   console.log(`🛡️  OnSignale API démarrée sur http://localhost:${PORT}`)
   console.log(`   Client attendu sur: ${process.env.CLIENT_URL || 'http://localhost:5173'}`)
+
+  // Ce qui manque en production, dit une fois, là où quelqu'un le lit — plutôt
+  // que découvert dans un lien mort envoyé à un agent municipal.
+  for (const missing of missingInProduction()) {
+    console.warn(`⚠️  Configuration incomplète : ${missing}`)
+  }
 })
