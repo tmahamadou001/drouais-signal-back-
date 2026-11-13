@@ -33,6 +33,7 @@ const schema = z.object({
   EMAIL_ASSET_URL: z.string().url().optional(),
   UNSUBSCRIBE_SECRET: z.string().min(16).optional(),
   REDIS_URL: z.string().optional(),
+  PUBLIC_SITE_URL: z.string().url().optional(),
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_ENVIRONMENT: z.string().optional(),
   SENTRY_RELEASE: z.string().optional(),

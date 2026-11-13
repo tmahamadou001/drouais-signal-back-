@@ -42,3 +42,29 @@ export function tenantWebUrl(slug: string | null | undefined): string {
 
   return `https://${slug}.${host}`
 }
+
+/**
+ * L'adresse du site public — `onsignale.fr`, sans commune.
+ *
+ * Le jumeau de `tenantWebUrl`, et son contraire : celle-ci vise l'apex
+ * **exprès**, là où l'autre s'en détourne. Les deux ont leur emploi, et les
+ * confondre est la méprise que tout ce fichier documente.
+ *
+ * Sa raison d'être est la confirmation d'inscription. Au moment où un habitant
+ * crée son compte, aucune commune n'est encore en jeu : il ne rejoint pas
+ * l'espace de Dreux, il crée un compte OnSignale, qui le suivra partout — un
+ * compte vaut pour toutes les communes, c'est la règle de `/mine`. Lui envoyer
+ * un lien vers `dreux.onsignale.fr` graverait dans son e-mail une commune
+ * qu'il quittera peut-être, et poserait la question insoluble du slug à
+ * choisir quand il n'y en a pas.
+ *
+ * Le site, lui, est servi par Cloudflare depuis ce dossier `site/` : il
+ * répond sans commune, sans application Vue et sans compte.
+ */
+export function publicSiteUrl(): string {
+  const configured = process.env.PUBLIC_SITE_URL
+
+  if (configured) return configured.replace(/\/$/, '')
+
+  return 'https://onsignale.fr'
+}

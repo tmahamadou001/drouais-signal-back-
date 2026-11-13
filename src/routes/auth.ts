@@ -17,7 +17,9 @@ import {
   setPasswordSchema,
   verifyLinkSchema,
 } from '../schemas/auth.schema.js'
-import { buildAccountLink, redeemAccountLink, consumeRedemption } from '../services/accountLinkService.js'
+import { buildAccountLink, buildSignupLink, redeemAccountLink, consumeRedemption } from '../services/accountLinkService.js'
+import { buildConfirmEmail } from '../templates/confirmEmail.js'
+import { publicSiteUrl } from '../lib/tenantUrl.js'
 import { deleteAccount } from '../services/accountDeletionService.js'
 
 const router: ExpressRouter = Router()
@@ -108,49 +110,93 @@ function rejectWeakPassword(error: { code?: string } | null): void {
   )
 }
 
+/**
+ * L'inscription, et l'e-mail qui la confirme — le nôtre.
+ *
+ * Cette route appelait `auth.signUp`, qui demande à **Supabase** d'envoyer
+ * l'e-mail de confirmation. C'était le dernier envoi de la plateforme à
+ * échapper à Resend : expéditeur inconnu de l'habitant, gabarit qui n'est pas
+ * le nôtre, et un lien vers `<projet>.supabase.co` pour tout premier contact
+ * avec le service. Voir `buildSignupLink` pour le remplacement.
+ *
+ * **La réponse ne dit jamais si l'adresse était déjà prise.** 202 dans les
+ * deux cas : la distinction ferait de cette route un outil de vérification des
+ * adresses, exactement ce que `login` refuse déjà. Ce qui diffère, c'est
+ * l'e-mail — et lui ne part qu'à l'adresse concernée, donc ne révèle rien.
+ */
 router.post('/register', authLimiter, validate(registerSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password, firstName } = req.body
 
-    const { data, error } = await createCredentialsClient().auth.signUp({
+    const link = await buildSignupLink({ email, password, firstName })
+
+    if (!link.ok) {
+      // Un mot de passe refusé se dit : il ne renseigne sur l'existence
+      // d'aucun compte, et le taire transforme un refus en panne apparente.
+      rejectWeakPassword({ code: link.reason })
+
+      if (link.reason === 'error') {
+        console.error('[Auth] Inscription impossible :', link.message)
+        throw new AppError(400, 'signup_failed', 'Inscription impossible. Vérifiez vos informations.')
+      }
+    }
+
+    /**
+     * L'e-mail part **après** la réponse décidée, et son échec ne la change
+     * pas : un compte créé dont l'e-mail n'est pas parti se rattrape par
+     * « mot de passe oublié », alors qu'un 500 laisserait l'habitant croire
+     * que rien n'a eu lieu et le ferait recommencer — sur une adresse
+     * désormais prise.
+     */
+    sendConfirmEmail({
       email,
-      password,
-      options: { data: { first_name: firstName ?? '' } },
-    })
+      firstName,
+      actionLink: link.ok ? link.url : null,
+    }).catch((err) => console.error('[Auth] E-mail de confirmation non envoyé :', err))
 
-    if (error) {
-      rejectWeakPassword(error)
-
-      /**
-       * Le client ne voit qu'un refus générique, et c'est voulu : une adresse
-       * déjà prise ne se dit pas, ce serait la même fuite que pour `login`,
-       * par une autre porte.
-       *
-       * Mais tout n'est pas une erreur de saisie. GoTrue répond aussi par une
-       * erreur quand **son envoi d'e-mail échoue** — SMTP mal configuré, quota
-       * du service par défaut atteint — et cette panne-là est opérationnelle,
-       * pas utilisateur. Sans cette trace, elle se présentait comme un
-       * « vérifiez vos informations » adressé à quelqu'un dont les
-       * informations étaient bonnes.
-       */
-      console.error('[Auth] Inscription refusée par Supabase :', error.code ?? error.status, error.message)
-
-      throw new AppError(400, 'signup_failed', 'Inscription impossible. Vérifiez vos informations.')
-    }
-
-    // Confirmation d'e-mail activée : pas de session tant que le lien n'est pas
-    // suivi. Le client doit le dire plutôt que d'attendre un jeton qui ne
-    // viendra pas.
-    if (!data.session || !data.user) {
-      res.status(202).json({ pending: 'email_confirmation' })
-      return
-    }
-
-    res.status(201).json(await buildAuthPayload(data.user, data.session, req.tenant?.id))
+    // Pas de session tant que le lien n'est pas suivi : le client doit le dire
+    // plutôt que d'attendre un jeton qui ne viendra pas.
+    res.status(202).json({ pending: 'email_confirmation' })
   } catch (err) {
     next(err)
   }
 })
+
+/** L'envoi lui-même, isolé pour que la route reste lisible et testable. */
+async function sendConfirmEmail(params: {
+  email: string
+  firstName?: string | null
+  actionLink: string | null
+}): Promise<void> {
+  if (!process.env.RESEND_API_KEY) {
+    console.warn('[Auth] RESEND_API_KEY absente : aucun e-mail de confirmation envoyé.')
+    return
+  }
+
+  const { html, text } = buildConfirmEmail({
+    recipientEmail: params.email,
+    firstName: params.firstName,
+    actionLink: params.actionLink,
+    // La page d'accueil du site, et non `/confirmation` : il n'y a rien à
+    // confirmer dans ce cas, et c'est de là que partent les liens vers les
+    // applications. Un citoyen se connecte dans l'app, pas dans un back-office.
+    loginUrl: publicSiteUrl(),
+  })
+
+  const resend = new Resend(process.env.RESEND_API_KEY)
+
+  await resend.emails.send({
+    // `EMAIL_FROM` est une adresse nue partout dans ce dépôt, jamais un
+    // en-tête complet : le nom d'affichage s'ajoute ici, comme ailleurs.
+    from: `OnSignale <${process.env.EMAIL_FROM ?? 'notifications@onsignale.fr'}>`,
+    to: params.email,
+    subject: plainSubject(
+      params.actionLink ? 'Confirmez votre adresse e-mail' : 'Vous avez déjà un compte OnSignale'
+    ),
+    html,
+    text,
+  })
+}
 
 // ─── GET /api/auth/session ──────────────────────────────────
 // Qui suis-je, et qu'ai-je le droit de faire dans cette commune.

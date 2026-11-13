@@ -69,6 +69,6 @@ export const setPasswordSchema = z.object({
 export const verifyLinkSchema = z.object({
   body: z.object({
     token: z.string().trim().min(16).max(512),
-    type: z.enum(['invite', 'recovery']),
+    type: z.enum(['invite', 'recovery', 'signup']),
   }),
 })

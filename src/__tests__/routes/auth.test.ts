@@ -5,9 +5,13 @@ import { errorHandler } from '../../middleware/errorHandler.js'
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
+const { resendSend } = vi.hoisted(() => ({
+  resendSend: vi.fn((_payload: Record<string, unknown>) => Promise.resolve({ id: 'email-id' })),
+}))
+
 vi.mock('resend', () => ({
   Resend: class {
-    emails = { send: () => Promise.resolve({ id: 'email-id' }) }
+    emails = { send: resendSend }
   },
 }))
 
@@ -396,14 +400,69 @@ describe('POST /api/auth/set-password', () => {
 
 // ─── POST /api/auth/register ─────────────────────────────────────────────────
 
+/**
+ * L'inscription d'un habitant, et l'e-mail qui la confirme.
+ *
+ * Ce parcours partait entièrement chez Supabase : `signUp()` déclenchait son
+ * propre envoi, avec son expéditeur, son gabarit et un lien vers
+ * `<projet>.supabase.co`. Il passe désormais par `generateLink` — qui crée le
+ * compte **sans rien envoyer** — puis par Resend, comme tout le reste.
+ *
+ * Le défaut de sécurité corrigé au passage : l'ancienne route rendait **400**
+ * pour une adresse déjà prise et **202** pour une adresse neuve. Le corps de
+ * la réponse était pourtant soigneusement muet — mais le code de statut, lui,
+ * répondait à la question. N'importe qui pouvait énumérer les adresses ayant
+ * un compte, ce que `login` interdit depuis toujours. Les deux cas rendent
+ * maintenant la même chose.
+ */
 describe('POST /api/auth/register', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    process.env.RESEND_API_KEY = 're_test'
+    delete process.env.PUBLIC_SITE_URL
+  })
 
-  it('says a leaked password was refused', async () => {
-    credentialsAuth.signUp.mockResolvedValue({
-      data: { user: null, session: null },
-      error: { code: 'weak_password', message: 'Password is known to be weak' },
-    })
+  const linkOk = {
+    data: { user: { id: 'u-1' }, properties: { hashed_token: 'tok_0123456789abcdef' } },
+    error: null,
+  }
+
+  it('never asks Supabase to send the email itself', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue(linkOk as never)
+
+    await request(makeApp())
+      .post('/api/auth/register')
+      .send({ email: 'habitant@ville.fr', password: 'UnMotDePasseSolide1!' })
+
+    expect(credentialsAuth.signUp).not.toHaveBeenCalled()
+    expect(supabaseAdmin.auth.admin.generateLink).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'signup' })
+    )
+  })
+
+  it('sends our own confirmation email, carrying our own link', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue(linkOk as never)
+
+    const res = await request(makeApp())
+      .post('/api/auth/register')
+      .send({ email: 'habitant@ville.fr', password: 'UnMotDePasseSolide1!', firstName: 'Léa' })
+
+    expect(res.status).toBe(202)
+    expect(res.body).toEqual({ pending: 'email_confirmation' })
+
+    expect(resendSend).toHaveBeenCalledTimes(1)
+    const sent = resendSend.mock.calls[0][0] as any
+    expect(sent.to).toBe('habitant@ville.fr')
+    expect(sent.subject).toBe('Confirmez votre adresse e-mail')
+    expect(sent.html).toContain('https://onsignale.fr/confirmation?token=tok_0123456789abcdef&type=signup')
+    expect(sent.html).not.toContain('supabase')
+    expect(sent.html).toContain('Léa')
+  })
+
+  it('says a leaked password was refused, and sends nothing', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {}, error: { code: 'weak_password', message: 'Password is known to be weak' },
+    } as never)
 
     const res = await request(makeApp())
       .post('/api/auth/register')
@@ -411,16 +470,46 @@ describe('POST /api/auth/register', () => {
 
     expect(res.status).toBe(422)
     expect(res.body.error).toBe('weak_password')
+    expect(resendSend).not.toHaveBeenCalled()
   })
 
-  it('still says nothing about an address that is already taken', async () => {
-    // The vagueness protects *addresses* — telling them apart would turn this
-    // route into a way to check which e-mails a commune employs. A refused
-    // password says nothing about whether an account exists.
-    credentialsAuth.signUp.mockResolvedValue({
-      data: { user: null, session: null },
-      error: { code: 'email_exists', message: 'already registered' },
-    })
+  /**
+   * Le cœur du correctif de sécurité : même statut, même corps. Seul l'e-mail
+   * diffère, et il ne part qu'au titulaire de la boîte.
+   */
+  it('answers an address already taken exactly as a fresh one', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {}, error: { code: 'email_exists', message: 'already registered' },
+    } as never)
+
+    const res = await request(makeApp())
+      .post('/api/auth/register')
+      .send({ email: 'habitant@ville.fr', password: 'UnMotDePasseSolide1!' })
+
+    expect(res.status).toBe(202)
+    expect(res.body).toEqual({ pending: 'email_confirmation' })
+    expect(JSON.stringify(res.body)).not.toMatch(/exist|prise|registered/i)
+  })
+
+  it('tells the existing owner, and offers no confirmation link', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {}, error: { code: 'email_exists', message: 'already registered' },
+    } as never)
+
+    await request(makeApp())
+      .post('/api/auth/register')
+      .send({ email: 'habitant@ville.fr', password: 'UnMotDePasseSolide1!' })
+
+    const sent = resendSend.mock.calls[0][0] as any
+    expect(sent.subject).toBe('Vous avez déjà un compte OnSignale')
+    expect(sent.html).not.toContain('/confirmation?token=')
+  })
+
+  /** Une panne est une panne : elle se journalise et se dit, elle ne se déguise pas. */
+  it('refuses on an unexpected Supabase failure', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {}, error: { status: 500, message: 'database is down' },
+    } as never)
 
     const res = await request(makeApp())
       .post('/api/auth/register')
@@ -428,7 +517,23 @@ describe('POST /api/auth/register', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.error).toBe('signup_failed')
-    expect(JSON.stringify(res.body)).not.toMatch(/exist|prise|registered/i)
+    expect(resendSend).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Le compte est créé avant l'envoi. Si celui-ci échoue, répondre 500 ferait
+   * recommencer l'habitant sur une adresse désormais prise — c'est-à-dire le
+   * coincer. Le rattrapage existe : « mot de passe oublié ».
+   */
+  it('still confirms the signup when the email cannot be sent', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue(linkOk as never)
+    resendSend.mockRejectedValueOnce(new Error('Resend down'))
+
+    const res = await request(makeApp())
+      .post('/api/auth/register')
+      .send({ email: 'habitant@ville.fr', password: 'UnMotDePasseSolide1!' })
+
+    expect(res.status).toBe(202)
   })
 })
 
@@ -544,14 +649,38 @@ describe('POST /api/auth/verify-link', () => {
     expect(res.body.error).toBe('invalid_link')
   })
 
-  it('refuses a kind of link that does not exist', async () => {
+  /**
+   * `signup` est devenu un type valide — la confirmation d'inscription passe
+   * par ici. Ce cas gardait `signup` comme exemple de type inexistant ; il
+   * teste maintenant un type que GoTrue connaît mais que nous n'émettons
+   * jamais, et c'est ce que l'énumération doit refuser.
+   */
+  it('refuses a kind of link we never issue', async () => {
     const res = await request(makeApp())
       .post('/api/auth/verify-link')
-      .send({ token: 'abcdef0123456789abcdef', type: 'signup' })
+      .send({ token: 'abcdef0123456789abcdef', type: 'magiclink' })
 
     // 422 : c'est la réponse du validateur Zod dans ce dépôt.
     expect(res.status).toBe(422)
     expect(credentialsAuth.verifyOtp).not.toHaveBeenCalled()
+  })
+
+  /** La confirmation d'inscription emprunte le même échange. */
+  it('redeems a signup confirmation', async () => {
+    credentialsAuth.verifyOtp.mockResolvedValue({
+      data: { session: { access_token: 'jwt-signup' }, user: { id: 'u-9', email: 'habitant@ville.fr' } },
+      error: null,
+    })
+
+    const res = await request(makeApp())
+      .post('/api/auth/verify-link')
+      .send({ token: 'tok_0123456789abcdef', type: 'signup' })
+
+    expect(res.status).toBe(200)
+    expect(credentialsAuth.verifyOtp).toHaveBeenCalledWith({
+      token_hash: 'tok_0123456789abcdef',
+      type: 'signup',
+    })
   })
 
   /** Le seul champ qu'un inconnu peut poster sans compte : il est borné. */

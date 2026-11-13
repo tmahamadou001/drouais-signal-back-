@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../lib/supabaseAdmin.js'
 import { createCredentialsClient } from '../lib/supabaseAuthClient.js'
-import { tenantWebUrl } from '../lib/tenantUrl.js'
+import { publicSiteUrl, tenantWebUrl } from '../lib/tenantUrl.js'
 import { AppError } from '../middleware/errorHandler.js'
 
 /**
@@ -29,6 +29,18 @@ import { AppError } from '../middleware/errorHandler.js'
  */
 
 export type AccountLinkType = 'invite' | 'recovery'
+
+/**
+ * Ce qu'un lien peut être au moment où on l'échange.
+ *
+ * Volontairement plus large que `AccountLinkType` : `buildAccountLink` ne sait
+ * pas fabriquer une confirmation d'inscription — celle-ci exige un mot de
+ * passe et passe par `buildSignupLink` — mais `redeemAccountLink` sait très
+ * bien la vérifier, et c'est le même `verifyOtp` dans les trois cas. Fondre
+ * les deux en un seul type faisait accepter à la génération un `signup`
+ * qu'elle ne pouvait pas honorer.
+ */
+export type VerifiableLinkType = AccountLinkType | 'signup'
 
 /**
  * Le lien à envoyer, et l'identifiant du compte concerné.
@@ -79,7 +91,7 @@ export async function buildAccountLink(params: {
  */
 export async function redeemAccountLink(params: {
   token: string
-  type: AccountLinkType
+  type: VerifiableLinkType
 }): Promise<{ accessToken: string; userId: string; email: string | null }> {
   const client = createCredentialsClient()
 
@@ -156,4 +168,74 @@ export function consumeRedemption(userId: string, now = Date.now()): boolean {
 /** Pour les tests : l'état en mémoire ne doit pas fuir d'un cas à l'autre. */
 export function clearRedemptions(): void {
   redemptions.clear()
+}
+
+/**
+ * L'inscription d'un habitant, et le lien qui la confirme.
+ *
+ * **Pourquoi ce n'est pas `signUp()`.** `auth.signUp` demande à Supabase
+ * d'envoyer lui-même l'e-mail de confirmation : une adresse d'expéditeur que
+ * nous ne contrôlons pas, un gabarit qui n'est pas le nôtre, un lien vers
+ * `<projet>.supabase.co`, et le nom de notre fournisseur dans la boîte d'un
+ * habitant. C'était le dernier envoi de la plateforme à échapper à Resend —
+ * tout le reste (invitations, réinitialisations, changements de statut,
+ * rapports) passe par `templates/` et par notre domaine.
+ *
+ * `admin.generateLink({ type: 'signup' })` crée le compte **et** rend le jeton,
+ * sans rien envoyer. L'e-mail devient le nôtre, et le lien aussi.
+ *
+ * **Pourquoi l'apex et non une commune.** Voir `publicSiteUrl` : à l'instant
+ * de l'inscription il n'y a pas de commune, et un compte vaut pour toutes.
+ *
+ * **Pourquoi un résultat et non une exception.** L'appelant doit distinguer
+ * trois cas qui se répondent différemment — un mot de passe refusé se dit, une
+ * adresse déjà prise ne se dit pas, une panne se journalise — et une exception
+ * les aurait aplatis.
+ */
+export type SignupLinkResult =
+  | { ok: true; url: string; userId: string | null }
+  | { ok: false; reason: 'weak_password' | 'already_registered' | 'error'; message: string }
+
+/** Ce que Supabase répond quand l'adresse a déjà un compte. */
+function isAlreadyRegistered(error: { code?: string; message?: string; status?: number }): boolean {
+  if (error.code === 'email_exists' || error.code === 'user_already_exists') return true
+
+  // Les versions de GoTrue ne s'accordent pas sur le code ; le message, lui,
+  // est stable. On le lit en dernier recours plutôt que de traiter une adresse
+  // déjà prise comme une panne — ce qui aurait rendu un 500 à l'habitant.
+  return /already (been )?registered|already exists/i.test(error.message ?? '')
+}
+
+export async function buildSignupLink(params: {
+  email: string
+  password: string
+  firstName?: string | null
+}): Promise<SignupLinkResult> {
+  const { data, error } = await supabaseAdmin.auth.admin.generateLink({
+    type: 'signup',
+    email: params.email,
+    password: params.password,
+    options: { data: { first_name: params.firstName ?? '' } },
+  })
+
+  if (error) {
+    if (error.code === 'weak_password') {
+      return { ok: false, reason: 'weak_password', message: error.message }
+    }
+    if (isAlreadyRegistered(error)) {
+      return { ok: false, reason: 'already_registered', message: error.message }
+    }
+
+    return { ok: false, reason: 'error', message: error.message }
+  }
+
+  if (!data?.properties?.hashed_token) {
+    return { ok: false, reason: 'error', message: 'Supabase n’a pas rendu de jeton.' }
+  }
+
+  const url = new URL(`${publicSiteUrl()}/confirmation`)
+  url.searchParams.set('token', data.properties.hashed_token)
+  url.searchParams.set('type', 'signup')
+
+  return { ok: true, url: url.toString(), userId: data.user?.id ?? null }
 }

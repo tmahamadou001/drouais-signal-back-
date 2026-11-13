@@ -10,7 +10,7 @@ vi.mock('../../lib/supabaseAuthClient.js', () => ({
 }))
 
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js'
-import { buildAccountLink, redeemAccountLink } from '../../services/accountLinkService.js'
+import { buildAccountLink, buildSignupLink, redeemAccountLink } from '../../services/accountLinkService.js'
 
 /**
  * Le lien reçu par un agent qu'on invite.
@@ -139,5 +139,134 @@ describe('redeeming the token', () => {
     await expect(redeemAccountLink({ token: 'abc', type: 'invite' })).rejects.toMatchObject({
       status: 401,
     })
+  })
+})
+
+
+/**
+ * L'inscription d'un habitant.
+ *
+ * Trois choses à tenir, et chacune a une raison d'être écrite ici plutôt que
+ * relue :
+ *
+ *  - **aucun e-mail de Supabase.** C'est le défaut corrigé : `signUp()` lui
+ *    demandait d'envoyer lui-même, avec son expéditeur et un lien vers
+ *    `<projet>.supabase.co`. `generateLink` n'envoie rien ;
+ *  - **le lien vise l'apex**, pas une commune : au moment de l'inscription il
+ *    n'y en a pas, et un compte vaut pour toutes ;
+ *  - **une adresse déjà prise ne se confond pas avec une panne.** Les deux
+ *    sortaient en 400 générique ; l'une doit mener à un e-mail « vous avez
+ *    déjà un compte », l'autre à une trace dans les journaux.
+ */
+describe('signing up', () => {
+  const SIGNUP = {
+    data: { user: { id: 'user-9' }, properties: { hashed_token: 'tok_inscription_0123456789' } },
+    error: null,
+  }
+
+  beforeEach(() => {
+    delete process.env.PUBLIC_SITE_URL
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue(SIGNUP as never)
+  })
+
+  it('points at the public site, never at a commune', async () => {
+    const result = await buildSignupLink({ email: 'habitant@exemple.fr', password: 'Motdepasse!42' })
+
+    expect(result).toEqual({
+      ok: true,
+      url: 'https://onsignale.fr/confirmation?token=tok_inscription_0123456789&type=signup',
+      userId: 'user-9',
+    })
+  })
+
+  it('never hands out the Supabase URL', async () => {
+    const result = await buildSignupLink({ email: 'a@b.fr', password: 'Motdepasse!42' })
+
+    expect(result.ok && result.url).not.toContain('supabase')
+  })
+
+  /** `generateLink` crée le compte sans rien envoyer — c'est tout l'objet. */
+  it('asks Supabase for a link, not for an email', async () => {
+    await buildSignupLink({ email: 'a@b.fr', password: 'Motdepasse!42', firstName: 'Léa' })
+
+    expect(supabaseAdmin.auth.admin.generateLink).toHaveBeenCalledWith({
+      type: 'signup',
+      email: 'a@b.fr',
+      password: 'Motdepasse!42',
+      options: { data: { first_name: 'Léa' } },
+    })
+  })
+
+  it('tells a weak password apart, because that refusal is said out loud', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {}, error: { code: 'weak_password', message: 'Password is too weak' },
+    } as never)
+
+    const result = await buildSignupLink({ email: 'a@b.fr', password: 'azerty' })
+
+    expect(result).toMatchObject({ ok: false, reason: 'weak_password' })
+  })
+
+  it('recognises an address that already has an account, by code', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {}, error: { code: 'email_exists', message: 'Email address already registered' },
+    } as never)
+
+    const result = await buildSignupLink({ email: 'a@b.fr', password: 'Motdepasse!42' })
+
+    expect(result).toMatchObject({ ok: false, reason: 'already_registered' })
+  })
+
+  /** Les versions de GoTrue ne s'accordent pas sur le code ; le message, si. */
+  it('recognises it by message when the code is missing', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {}, error: { status: 422, message: 'User already registered' },
+    } as never)
+
+    const result = await buildSignupLink({ email: 'a@b.fr', password: 'Motdepasse!42' })
+
+    expect(result).toMatchObject({ ok: false, reason: 'already_registered' })
+  })
+
+  it('treats anything else as a failure to log, not as a user mistake', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: {}, error: { status: 500, message: 'database is down' },
+    } as never)
+
+    const result = await buildSignupLink({ email: 'a@b.fr', password: 'Motdepasse!42' })
+
+    expect(result).toMatchObject({ ok: false, reason: 'error' })
+  })
+
+  it('does not pretend to succeed when Supabase returns no token', async () => {
+    vi.mocked(supabaseAdmin.auth.admin.generateLink).mockResolvedValue({
+      data: { user: { id: 'u' }, properties: {} }, error: null,
+    } as never)
+
+    const result = await buildSignupLink({ email: 'a@b.fr', password: 'Motdepasse!42' })
+
+    expect(result.ok).toBe(false)
+  })
+
+  it('honours PUBLIC_SITE_URL, trailing slash included', async () => {
+    process.env.PUBLIC_SITE_URL = 'http://localhost:8788/'
+
+    const result = await buildSignupLink({ email: 'a@b.fr', password: 'Motdepasse!42' })
+
+    expect(result.ok && result.url).toContain('http://localhost:8788/confirmation?token=')
+  })
+})
+
+describe('redeeming a signup link', () => {
+  it('accepts the signup type, which only this flow produces', async () => {
+    verifyOtp.mockResolvedValue({
+      data: { session: { access_token: 'jeton' }, user: { id: 'u1', email: 'a@b.fr' } },
+      error: null,
+    })
+
+    const session = await redeemAccountLink({ token: 'tok_inscription_0123456789', type: 'signup' })
+
+    expect(verifyOtp).toHaveBeenCalledWith({ token_hash: 'tok_inscription_0123456789', type: 'signup' })
+    expect(session.email).toBe('a@b.fr')
   })
 })
