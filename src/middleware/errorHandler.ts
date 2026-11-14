@@ -69,6 +69,15 @@ export function errorHandler(
     return
   }
 
+  // Corps JSON malformé (body-parser) : erreur du client, pas une panne — 400, sans alerte Sentry
+  if (
+    err instanceof SyntaxError &&
+    (err as any).type === 'entity.parse.failed'
+  ) {
+    res.status(400).json({ error: 'bad_request', message: 'Corps de requête JSON invalide.' })
+    return
+  }
+
   // Multer errors (file too large, unexpected field, etc.)
   if (err && typeof err === 'object' && 'code' in err) {
     const multerCode = (err as any).code as string
