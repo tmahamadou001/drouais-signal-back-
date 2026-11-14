@@ -55,6 +55,14 @@ describe('errorHandler middleware', () => {
     expect(res.json).toHaveBeenCalledWith({ error: 'forbidden', message: 'Access denied.' })
   })
 
+  it('returns 400 and does not report to Sentry for a malformed JSON body', () => {
+    const res = makeRes()
+    const err = Object.assign(new SyntaxError('Unexpected token'), { type: 'entity.parse.failed', status: 400 })
+    errorHandler(err, req, res, next)
+    expect(res.status).toHaveBeenCalledWith(400)
+    expect(res.json).toHaveBeenCalledWith({ error: 'bad_request', message: 'Corps de requête JSON invalide.' })
+  })
+
   it('returns 422 with field-level details for a ZodError', () => {
     const res = makeRes()
     const schema = z.object({ email: z.string().email() })
